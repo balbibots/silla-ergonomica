@@ -25,6 +25,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           HEARTBEAT_DAYS: "7"
+          NOTIFY_ON_ANY_CHANGE: "true"
           REINTENTOS: "2"
           ESPERA_ENTRE_REINTENTOS_SEG: "5"
         run: python check_price.py

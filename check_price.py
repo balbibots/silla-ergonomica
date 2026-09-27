@@ -16,6 +16,8 @@ Variables de entorno:
   TELEGRAM_BOT_TOKEN    (obligatoria) token que te da @BotFather
   TELEGRAM_CHAT_ID      (obligatoria) tu chat id
   HEARTBEAT_DAYS        cada cuantos dias mandar el "sigo vivo" (por defecto 7)
+  NOTIFY_ON_ANY_CHANGE  "true" avisa de CUALQUIER cambio de precio, no solo
+                        cuando cruza el umbral (por defecto "true")
   STATE_FILE            donde se guarda la memoria entre ejecuciones
 """
 from __future__ import annotations
@@ -31,6 +33,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 HEARTBEAT_DAYS = float(os.environ.get("HEARTBEAT_DAYS", "7"))
+NOTIFY_ON_ANY_CHANGE = os.environ.get("NOTIFY_ON_ANY_CHANGE", "true").lower() == "true"
 STATE_FILE = os.environ.get("STATE_FILE", "state.json")
 ERROR_REMINDER_HOURS = 24
 
@@ -289,6 +292,18 @@ def procesar_producto(producto: dict, estado: dict) -> bool:
                 "Te aviso de nuevo si baja de %.0f €." % (producto["nombre"], precio, producto["umbral_eur"])
             )
             estado_producto["below_threshold_notified"] = False
+            algo_enviado = True
+
+        elif NOTIFY_ON_ANY_CHANGE and anterior_precio is not None and precio != anterior_precio:
+            # No ha cruzado el umbral, pero el precio SI se ha movido (para
+            # arriba o para abajo) desde la ultima vez: seguimiento general,
+            # no solo avisos de "chollo".
+            flecha = "📉" if precio < anterior_precio else "📈"
+            send_telegram(
+                "%s <b>%s ha cambiado de precio</b>\n\n%.2f € → <b>%.2f €</b>\nStock: %s\n\n"
+                "(Tu aviso de chollo sigue puesto en %.0f €.)\n\n%s"
+                % (flecha, producto["nombre"], anterior_precio, precio, stock, producto["umbral_eur"], producto["url"])
+            )
             algo_enviado = True
 
     except Exception as exc:  # noqa: BLE001

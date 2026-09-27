@@ -63,10 +63,13 @@ menor escala.
 | Evento | ¿Avisa? |
 |---|---|
 | Un precio baja de su umbral | ✅ Una vez, hasta que vuelva a subir |
+| Un precio cambia (sube o baja) SIN cruzar el umbral | ✅ Con `NOTIFY_ON_ANY_CHANGE` (activado por defecto) — es el modo "seguimiento general": te enteras de cualquier movimiento de precio, no solo de las rebajas |
 | Sihoo se agota / vuelve a haber stock | ✅ (solo Sihoo — Amazon no lo detecta, ver arriba) |
 | Ha pasado una semana sin ningún aviso | ✅ Un único mensaje con el precio actual de **ambos** productos |
 | Uno de los dos falla al leer el precio | ✅ Máximo 1 vez / 24h, **solo del que falla** |
-| Todo sigue igual | ❌ Silencio |
+| Todo sigue exactamente igual | ❌ Silencio |
+
+Si en algún momento quieres volver a que solo te avise de bajadas de precio "de chollo" (sin seguimiento general de cada subida y bajada), pon `NOTIFY_ON_ANY_CHANGE: "false"` en el workflow.
 
 La primera vez que se ejecuta el bot no avisa de nada, solo guarda el punto
 de partida (precio, stock, fecha del heartbeat) de cada producto — igual que
