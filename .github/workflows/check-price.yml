@@ -1,0 +1,41 @@
+name: Vigilar precio de la silla
+
+on:
+  schedule:
+    # Cada 6 horas. El minuto 23 es aposta: a las horas en punto GitHub va
+    # saturado y retrasa los cron.
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Comprobar los precios
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HEARTBEAT_DAYS: "7"
+        run: python check_price.py
+
+      - name: Guardar el estado
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "estado: comprobacion automatica de precios"
+            git push
+          else
+            echo "Sin cambios en el estado."
+          fi
