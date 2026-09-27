@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,6 +33,12 @@ from datetime import datetime, timedelta, timezone
 HEARTBEAT_DAYS = float(os.environ.get("HEARTBEAT_DAYS", "7"))
 STATE_FILE = os.environ.get("STATE_FILE", "state.json")
 ERROR_REMINDER_HOURS = 24
+
+# Reintentos ante un fallo de red/bloqueo puntual (sobre todo pensado para
+# Amazon, que a veces bloquea una peticion suelta pero no la siguiente unos
+# segundos despues). Si TODOS los intentos fallan, se avisa como error.
+REINTENTOS = int(os.environ.get("REINTENTOS", "2"))
+ESPERA_ENTRE_REINTENTOS_SEG = float(os.environ.get("ESPERA_ENTRE_REINTENTOS_SEG", "5"))
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -56,9 +63,9 @@ PRODUCTOS = [
     },
     {
         "id": "silla_sihoo_amazon",
-        "nombre": "Sihoo Doro C300 (Amazon.es, negra)",
+        "nombre": "Sihoo Doro C300 (Amazon.es, gris)",
         "tipo": "amazon",
-        "url": "https://www.amazon.es/SIHOO-Doro-C300-ergon%C3%B3mica-reposabrazos/dp/B0C3T865C2",
+        "url": "https://www.amazon.es/SIHOO-Doro-C300-ergon%C3%B3mica-reposabrazos/dp/B0C3TNC785",
         "umbral_eur": 379.99,
     },
 ]
@@ -210,6 +217,27 @@ def handle_error(estado_producto: dict, nombre: str, mensaje: str) -> bool:
     return False
 
 
+def fetch_con_reintento(fetcher, producto: dict) -> tuple[float, bool, str]:
+    """Llama al fetcher del producto, reintentando ante un fallo puntual.
+
+    Pensado sobre todo para Amazon: un bloqueo momentaneo de una peticion
+    suelta no significa que la siguiente, unos segundos despues, tambien
+    vaya a fallar. Si el ULTIMO intento tambien falla, se relanza ese error
+    tal cual (para que el mensaje de aviso sea el real, no uno generico).
+    """
+    ultimo_error = None
+    for intento in range(1, REINTENTOS + 1):
+        try:
+            return fetcher(producto)
+        except Exception as exc:  # noqa: BLE001
+            ultimo_error = exc
+            if intento < REINTENTOS:
+                print("  reintento %d/%d tras fallo (%s), esperando %.0fs..."
+                      % (intento, REINTENTOS - 1, exc, ESPERA_ENTRE_REINTENTOS_SEG))
+                time.sleep(ESPERA_ENTRE_REINTENTOS_SEG)
+    raise ultimo_error
+
+
 def procesar_producto(producto: dict, estado: dict) -> bool:
     """Comprueba un producto y manda los avisos que correspondan.
     Devuelve True si se ha mandado algun mensaje (para el heartbeat)."""
@@ -218,7 +246,7 @@ def procesar_producto(producto: dict, estado: dict) -> bool:
     fetcher = FETCHERS[producto["tipo"]]
 
     try:
-        precio, disponible, titulo = fetcher(producto)
+        precio, disponible, titulo = fetch_con_reintento(fetcher, producto)
     except Exception as exc:  # noqa: BLE001
         return handle_error(estado_producto, producto["nombre"], "%s: %s" % (type(exc).__name__, exc))
 

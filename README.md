@@ -7,7 +7,7 @@ vez. De momento vigila dos:
 | Producto | Fuente | Precio (2026-09-27) | Aviso si baja de |
 |---|---|---|---|
 | Sihoo Doro C300, blanca | [Tienda oficial](https://eu.sihoo.com/es/products/sihoo-doro-c300-ergonomischer-stuhl) | 299,99 € | 299,99 € |
-| Sihoo Doro C300, negra | [Amazon.es](https://www.amazon.es/SIHOO-Doro-C300-ergon%C3%B3mica-reposabrazos/dp/B0C3T865C2) | 379,99 € | 379,99 € |
+| Sihoo Doro C300, gris | [Amazon.es](https://www.amazon.es/SIHOO-Doro-C300-ergon%C3%B3mica-reposabrazos/dp/B0C3TNC785) | 379,99 € | 379,99 € |
 
 El umbral de cada uno está puesto **al precio de hoy**: te avisará en cuanto
 baje aunque sea un céntimo. Súbelo en `check_price.py` (variable `PRODUCTOS`)
@@ -33,6 +33,15 @@ bot te avisará del error (máximo 1 vez cada 24h) pero seguirá vigilando
 Sihoo con total normalidad. Si en la práctica Amazon empieza a fallar todo
 el rato, lo más sensato será quitarlo de `PRODUCTOS` y quedarnos solo con la
 fuente fiable — dímelo si llega ese caso.
+
+**Reintento automático** (añadido tras el primer bloqueo real que nos dio
+GitHub Actions): antes de darse por vencido con un producto, el bot lo
+intenta hasta 2 veces, esperando 5 segundos entre intento e intento. Un
+bloqueo de Amazon a una petición suelta no significa que la siguiente, unos
+segundos después, también vaya a fallar — así que esto reduce los avisos de
+error causados por un tropiezo puntual, sin ocultar un fallo de verdad (si
+fallan los 2 intentos, sigue avisando igual). Se ajusta con `REINTENTOS` y
+`ESPERA_ENTRE_REINTENTOS_SEG` en el workflow.
 
 ## Cómo lee cada precio
 
