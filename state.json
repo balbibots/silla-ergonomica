@@ -2,10 +2,10 @@
   "silla_sihoo_oficial": {
     "last_price": 299.99,
     "last_available": true,
-    "last_checked_at": "2026-09-28T18:38:12.539387+00:00"
+    "last_checked_at": "2026-09-29T00:41:10.538996+00:00"
   },
   "silla_sihoo_amazon": {
-    "last_error_notified_at": "2026-09-27T18:55:20.897833+00:00"
+    "last_error_notified_at": "2026-09-29T00:41:22.408043+00:00"
   },
   "last_heartbeat_at": "2026-09-27T18:55:21.701985+00:00"
 }
