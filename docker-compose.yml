@@ -1,0 +1,16 @@
+services:
+  silla-sihoo-bot:
+    build: .
+    container_name: silla-sihoo-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Sin esto, cada vez que reinicies el contenedor (o actualices la
+      # imagen) el bot "olvidaria" todo y volveria a la primera ejecucion
+      # (perdiendo el "ya avisado de esta bajada", el historial de
+      # heartbeat, etc). Con el volumen, state.json vive en el propio
+      # Raspberry Pi, fuera del contenedor, y sobrevive a todo eso.
+      - ./data:/app/data
+    environment:
+      - STATE_FILE=/app/data/state.json

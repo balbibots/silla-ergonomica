@@ -1,10 +1,16 @@
 name: Vigilar precio de la silla
 
 on:
-  schedule:
-    # Cada 6 horas. El minuto 23 es aposta: a las horas en punto GitHub va
-    # saturado y retrasa los cron.
-    - cron: "23 */6 * * *"
+  # El "schedule" automatico esta DESACTIVADO a proposito: el bot ahora
+  # corre en Docker en una Raspberry Pi propia (ver README, seccion
+  # "Desplegar en tu propio servidor"), porque Amazon bloquea las peticiones
+  # desde las IPs de GitHub Actions de forma permanente (lo confirmamos
+  # viendo que fallaban el 100% de las ejecuciones automaticas, mientras que
+  # desde cualquier otra red funcionaba sin problema).
+  #
+  # Se deja "workflow_dispatch" por si alguna vez quieres lanzarlo a mano
+  # desde aqui para probar algo puntual - pero la vigilancia real de verdad
+  # vive en la Raspberry Pi, no aqui.
   workflow_dispatch:
 
 permissions:

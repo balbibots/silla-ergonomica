@@ -1,0 +1,8 @@
+.git
+.github
+__pycache__
+*.pyc
+.env
+data/
+state.json
+README.md

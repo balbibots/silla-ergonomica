@@ -1,3 +1,9 @@
 __pycache__/
 *.pyc
 .env
+
+# Estado real del bot cuando corre en Docker (Raspberry Pi): vive en el
+# propio servidor, no en el repo. El state.json de la raiz es el que
+# escribia (o escribia antes) el workflow de GitHub Actions; son archivos
+# distintos, no hace falta que se pisen entre si.
+data/

@@ -4,44 +4,42 @@ Mismo tipo de bot que [yepoda-price-bot](https://github.com/balbibots/yepoda-pri
 pero generalizado para vigilar **varios productos de fuentes distintas** a la
 vez. De momento vigila dos:
 
-| Producto | Fuente | Precio (2026-09-27) | Aviso si baja de |
+| Producto | Fuente | Último precio confirmado | Aviso si baja de |
 |---|---|---|---|
-| Sihoo Doro C300, blanca | [Tienda oficial](https://eu.sihoo.com/es/products/sihoo-doro-c300-ergonomischer-stuhl) | 299,99 € | 299,99 € |
-| Sihoo Doro C300, gris | [Amazon.es](https://www.amazon.es/SIHOO-Doro-C300-ergon%C3%B3mica-reposabrazos/dp/B0C3TNC785) | 379,99 € | 379,99 € |
+| Sihoo Doro C300, blanca | [Tienda oficial](https://eu.sihoo.com/es/products/sihoo-doro-c300-ergonomischer-stuhl) | 299,99 € (2026-09-30) | 299,99 € |
+| Sihoo Doro C300, gris | [Amazon.es](https://www.amazon.es/SIHOO-Doro-C300-ergon%C3%B3mica-reposabrazos/dp/B0C3TNC785) | 336,99 € (2026-09-30 — ¡ya por debajo del umbral!) | 379,99 € |
 
 El umbral de cada uno está puesto **al precio de hoy**: te avisará en cuanto
 baje aunque sea un céntimo. Súbelo en `check_price.py` (variable `PRODUCTOS`)
 si solo quieres que te avise a partir de una rebaja más grande.
 
-## ⚠️ Diferencia importante entre las dos fuentes
+## ⚠️ Por qué esto ya NO corre en GitHub Actions
 
 **Sihoo (tienda oficial) es tan fiable como Yepoda.** Es una tienda Shopify y
 usa el mismo endpoint JSON (`/products/xxx.js`) — no depende de la
 maquetación de la página, así que es muy difícil que se rompa.
 
-**Amazon es más frágil, y esto no tiene solución perfecta.** Amazon no tiene
-ningún endpoint público de precios. El bot lee el precio de un bloque de
-datos embebido en el HTML de la página — funciona hoy, pero:
-- Amazon puede rediseñar la página y romper la lectura en cualquier momento.
-- Amazon bloquea con más frecuencia las peticiones automatizadas que vienen
-  de IPs de centros de datos (como las de GitHub Actions) que las que
-  vienen de una IP residencial normal como la de tu casa.
+**Amazon, en cambio, nos dio un problema real y confirmado.** Reconstruimos
+el historial completo mirando los commits de `state.json`: **las 13
+ejecuciones automáticas desde el despliegue fallaron el 100% de las veces**
+al intentar leer el precio en Amazon, mientras que la misma petición exacta
+funcionaba sin problema desde cualquier otro sitio (mi entorno, o cualquier
+IP normal). Conclusión: **Amazon tiene bloqueadas de forma permanente las
+IPs de GitHub Actions** para esta página — no es un bloqueo puntual ni un
+cambio de diseño de la web, es la infraestructura de GitHub la que está
+identificada y filtrada.
 
-Por eso el bot está diseñado para que **un fallo en Amazon nunca afecte a
-Sihoo**: si Amazon empieza a fallar (por bloqueo o por cambio de página), el
-bot te avisará del error (máximo 1 vez cada 24h) pero seguirá vigilando
-Sihoo con total normalidad. Si en la práctica Amazon empieza a fallar todo
-el rato, lo más sensato será quitarlo de `PRODUCTOS` y quedarnos solo con la
-fuente fiable — dímelo si llega ese caso.
+Por eso el bot vive ahora en **Docker, en una Raspberry Pi propia** (ver
+más abajo): misma IP residencial de siempre, sin ese bloqueo. El workflow de
+GitHub Actions se queda solo con el botón manual (`workflow_dispatch`), por
+si algún día quieres lanzarlo desde ahí para probar algo puntual, pero la
+vigilancia real ya no depende de GitHub.
 
-**Reintento automático** (añadido tras el primer bloqueo real que nos dio
-GitHub Actions): antes de darse por vencido con un producto, el bot lo
-intenta hasta 2 veces, esperando 5 segundos entre intento e intento. Un
-bloqueo de Amazon a una petición suelta no significa que la siguiente, unos
-segundos después, también vaya a fallar — así que esto reduce los avisos de
-error causados por un tropiezo puntual, sin ocultar un fallo de verdad (si
-fallan los 2 intentos, sigue avisando igual). Se ajusta con `REINTENTOS` y
-`ESPERA_ENTRE_REINTENTOS_SEG` en el workflow.
+**Reintento automático** (se queda, sigue siendo útil): antes de darse por
+vencido con un producto, el bot lo intenta hasta 2 veces, esperando 5
+segundos entre intento e intento — por si el fallo es un tropiezo de red
+normal y corriente, no un bloqueo de IP. Se ajusta con `REINTENTOS` y
+`ESPERA_ENTRE_REINTENTOS_SEG`.
 
 ## Cómo lee cada precio
 
@@ -111,20 +109,99 @@ Y una comprobación real (sin forzar nada):
 python check_price.py
 ```
 
-## Desplegarlo en GitHub Actions
+## Desplegar en tu propio servidor (Raspberry Pi, con Docker)
 
-1. Sube estos archivos a un repo (privado o público, como prefieras).
-2. **Settings → Secrets and variables → Actions** → crea `TELEGRAM_BOT_TOKEN`
-   y `TELEGRAM_CHAT_ID`.
-3. Pestaña **Actions** → **Vigilar precio de la silla** → **Run workflow**
-   para probarlo a mano la primera vez.
+Esto es lo que de verdad mantiene el bot vivo ahora. Se hace por SSH,
+conectado a la Raspberry.
 
-A partir de ahí, corre solo cada 6 horas.
+### 1. Copiar el proyecto a la Raspberry
+
+Lo más simple es clonar el repo directamente ahí:
+
+```bash
+git clone https://github.com/balbibots/silla-ergonomica.git
+cd silla-ergonomica
+```
+
+(Si prefieres no usar git en la Raspberry, también vale con copiar por
+`scp`/`sftp` los archivos: `check_price.py`, `loop_runner.py`, `Dockerfile`,
+`docker-compose.yml`, `.env.example`.)
+
+### 2. Crear tu archivo de configuración
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Rellena `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` (los mismos de siempre, o
+unos nuevos si prefieres separar avisos). Guarda con `Ctrl+O`, `Enter`,
+`Ctrl+X`. Este archivo **nunca se sube a git** (ya está en `.gitignore`).
+
+### 3. Construir y arrancar el contenedor
+
+```bash
+docker compose up -d --build
+```
+
+- `up` arranca el servicio.
+- `-d` lo deja corriendo en segundo plano (puedes cerrar la sesión SSH y
+  sigue funcionando).
+- `--build` construye la imagen la primera vez (y cada vez que cambies el
+  código).
+
+### 4. Comprobar que funciona
+
+```bash
+docker compose logs -f
+```
+
+Deberías ver algo como:
+
+```
+Bot arrancado en modo bucle. Comprobando cada 6.0 horas.
+
+[2026-09-30T...] Nueva comprobacion...
+[Sihoo Doro C300 (tienda oficial, blanca)] 299.99 EUR | disponible: True | umbral: 299.99 EUR
+[Sihoo Doro C300 (Amazon.es, gris)] 336.99 EUR | disponible: True | umbral: 379.99 EUR
+```
+
+`Ctrl+C` sale de los logs sin parar el contenedor (sigue corriendo detrás).
+
+### Comandos que usarás a partir de ahora
+
+| Quiero... | Comando |
+|---|---|
+| Ver qué está haciendo ahora mismo | `docker compose logs -f` |
+| Pararlo | `docker compose down` |
+| Arrancarlo nuevamente | `docker compose up -d` |
+| Actualizar tras un cambio en el código (`git pull` primero) | `docker compose up -d --build` |
+| Ver si está corriendo | `docker compose ps` |
+
+### ¿Y si se reinicia la Raspberry?
+
+Con `restart: unless-stopped` en el `docker-compose.yml`, Docker vuelve a
+arrancar el contenedor solo, tanto si se cae por un error como si reinicias
+la Raspberry entera — siempre que el propio Docker esté configurado para
+arrancar al encender el sistema (lo normal en una instalación estándar).
+
+### El estado sobrevive a todo esto
+
+`state.json` no vive dentro del contenedor — vive en la carpeta `./data` de
+la propia Raspberry (se crea sola la primera vez), gracias al volumen del
+`docker-compose.yml`. Si reconstruyes la imagen, paras y arrancas el
+contenedor, o incluso lo borras y lo vuelves a crear, esa carpeta se queda
+intacta y el bot no "olvida" nada.
 
 ## Estructura
 
 ```
 check_price.py                      el script (solo libreria estandar)
-.github/workflows/check-price.yml   la programacion cada 6 horas
-state.json                          memoria entre ejecuciones (se crea solo)
+loop_runner.py                      bucle que llama a check_price.py cada X horas (para Docker)
+Dockerfile                          la imagen del contenedor
+docker-compose.yml                  como se arranca (volumen, variables, reinicio automatico)
+.env.example                        plantilla de configuracion (copiar a .env, con tus datos)
+.github/workflows/check-price.yml   solo boton manual ahora (ver seccion de arriba)
+data/state.json                     memoria entre ejecuciones cuando corre en Docker (se crea sola)
+state.json                          memoria de cuando corria en GitHub Actions (historico, ya no se actualiza)
 ```
