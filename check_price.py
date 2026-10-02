@@ -43,10 +43,24 @@ ERROR_REMINDER_HOURS = 24
 REINTENTOS = int(os.environ.get("REINTENTOS", "2"))
 ESPERA_ENTRE_REINTENTOS_SEG = float(os.environ.get("ESPERA_ENTRE_REINTENTOS_SEG", "5"))
 
+# Si el servidor responde 429 con "Retry-After", esperamos lo que pide (en vez
+# de los 5s genericos), siempre que no sea absurdamente largo.
+MAX_ESPERA_RETRY_AFTER_SEG = float(os.environ.get("MAX_ESPERA_RETRY_AFTER_SEG", "120"))
+
+# User-Agent de navegador: SOLO para Amazon, que lo necesita para servir la
+# pagina normal.
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+
+# User-Agent propio y honesto para endpoints JSON de Shopify. Aprendido a la
+# mala (2026-10-02): con el UA de Chrome de arriba, Shopify respondia
+# 429 "local_rate_limited" (Retry-After: 60) en TODAS las comprobaciones
+# desde la Raspberry, mientras que con un UA que no finge ser un navegador
+# (curl, o el de Python por defecto) la misma URL daba 200. Con un UA unico
+# nadie mas comparte nuestro limite.
+UA_BOT = "silla-sihoo-bot/1.0 (+https://github.com/balbibots/silla-ergonomica)"
 
 # --------------------------------------------------------------------------
 # Los productos a vigilar. Anadir uno nuevo = anadir una entrada aqui.
@@ -121,15 +135,42 @@ def send_telegram(text: str) -> None:
 # Lectura del precio: una funcion por tipo de fuente
 # --------------------------------------------------------------------------
 
+class ErrorHTTP(RuntimeError):
+    """Respuesta HTTP de error, con lo necesario para entender POR QUE falla
+    (estado, Retry-After y el principio del cuerpo) en el log y en el aviso."""
+
+    def __init__(self, status: int, retry_after: str | None, cuerpo: str):
+        self.status = status
+        try:
+            self.retry_after_seg = float(retry_after) if retry_after else None
+        except ValueError:
+            self.retry_after_seg = None  # puede venir como fecha HTTP: la ignoramos
+        partes = ["HTTP %s" % status]
+        if retry_after:
+            partes.append("Retry-After: %s" % retry_after)
+        if cuerpo:
+            partes.append("«%s»" % cuerpo[:120])
+        super().__init__(" | ".join(partes))
+
+
+def _descargar(url: str, headers: dict, timeout: float = 30) -> bytes:
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as exc:
+        cuerpo = exc.read(300).decode("utf-8", errors="replace")
+        cuerpo = " ".join(cuerpo.split())
+        raise ErrorHTTP(exc.code, exc.headers.get("Retry-After"), cuerpo) from None
+
+
 def fetch_shopify(producto: dict) -> tuple[float, bool, str]:
     """Endpoint JSON nativo de Shopify (igual que el bot de Yepoda).
-    Robusto: no depende de la maquetacion de la pagina."""
+    Robusto: no depende de la maquetacion de la pagina. Se identifica con
+    UA_BOT, NO con un UA de navegador (ver el comentario de UA_BOT)."""
     url = producto["url"].rstrip("/") + ".js"
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        if resp.status != 200:
-            raise RuntimeError("La web respondio con HTTP %s" % resp.status)
-        data = json.loads(resp.read().decode("utf-8"))
+    cuerpo = _descargar(url, {"User-Agent": UA_BOT, "Accept": "application/json"})
+    data = json.loads(cuerpo.decode("utf-8"))
 
     variantes = {str(v["id"]): v for v in data.get("variants", [])}
     variante = variantes.get(str(producto["variant_id"]))
@@ -163,14 +204,11 @@ def fetch_amazon(producto: dict) -> tuple[float, bool, str]:
     agotado como que Amazon haya cambiado la pagina o bloqueado la
     peticion. Se trata siempre como un error, nunca como "agotado".
     """
-    req = urllib.request.Request(
+    cuerpo = _descargar(
         producto["url"],
-        headers={"User-Agent": UA, "Accept-Language": "es-ES,es;q=0.9"},
+        {"User-Agent": UA, "Accept-Language": "es-ES,es;q=0.9"},
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        if resp.status != 200:
-            raise RuntimeError("Amazon respondio con HTTP %s" % resp.status)
-        html = resp.read().decode("utf-8", errors="ignore")
+    html = cuerpo.decode("utf-8", errors="ignore")
 
     m = _PATRON_PRECIO_AMAZON.search(html)
     if not m:
@@ -234,10 +272,25 @@ def fetch_con_reintento(fetcher, producto: dict) -> tuple[float, bool, str]:
             return fetcher(producto)
         except Exception as exc:  # noqa: BLE001
             ultimo_error = exc
-            if intento < REINTENTOS:
-                print("  reintento %d/%d tras fallo (%s), esperando %.0fs..."
-                      % (intento, REINTENTOS - 1, exc, ESPERA_ENTRE_REINTENTOS_SEG))
-                time.sleep(ESPERA_ENTRE_REINTENTOS_SEG)
+            if intento >= REINTENTOS:
+                break
+
+            espera = ESPERA_ENTRE_REINTENTOS_SEG
+            if isinstance(exc, ErrorHTTP) and exc.status == 429:
+                # Reintentar a los 5s un "demasiadas peticiones" no sirve de
+                # nada: hacemos caso al servidor. Si pide esperar mas de lo
+                # razonable, no insistimos (mejor fallar y avisar).
+                pedida = exc.retry_after_seg
+                if pedida is not None and pedida > MAX_ESPERA_RETRY_AFTER_SEG:
+                    print("  429 con Retry-After=%.0fs (> %.0fs): no reintento."
+                          % (pedida, MAX_ESPERA_RETRY_AFTER_SEG))
+                    break
+                if pedida is not None:
+                    espera = pedida + 1  # un segundo de margen
+
+            print("  reintento %d/%d tras fallo (%s), esperando %.0fs..."
+                  % (intento, REINTENTOS - 1, exc, espera))
+            time.sleep(espera)
     raise ultimo_error
 
 

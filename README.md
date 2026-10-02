@@ -23,8 +23,8 @@ maquetación de la página, así que es muy difícil que se rompa.
 el historial completo mirando los commits de `state.json`: **las 13
 ejecuciones automáticas desde el despliegue fallaron el 100% de las veces**
 al intentar leer el precio en Amazon, mientras que la misma petición exacta
-funcionaba sin problema desde cualquier otro sitio (mi entorno, o cualquier
-IP normal). Conclusión: **Amazon tiene bloqueadas de forma permanente las
+funcionaba sin problema desde una conexión doméstica (el PC de casa y,
+después, la Raspberry). Conclusión: **Amazon tiene bloqueadas de forma permanente las
 IPs de GitHub Actions** para esta página — no es un bloqueo puntual ni un
 cambio de diseño de la web, es la infraestructura de GitHub la que está
 identificada y filtrada.
@@ -39,7 +39,34 @@ vigilancia real ya no depende de GitHub.
 vencido con un producto, el bot lo intenta hasta 2 veces, esperando 5
 segundos entre intento e intento — por si el fallo es un tropiezo de red
 normal y corriente, no un bloqueo de IP. Se ajusta con `REINTENTOS` y
-`ESPERA_ENTRE_REINTENTOS_SEG`.
+`ESPERA_ENTRE_REINTENTOS_SEG`. Si el servidor contesta **429** con una
+cabecera `Retry-After`, el bot espera lo que le pide (con un tope de 120 s,
+`MAX_ESPERA_RETRY_AFTER_SEG`) en vez de los 5 s genéricos, y el aviso de error
+incluye el estado, el `Retry-After` y el principio del cuerpo de la
+respuesta, para no tener que adivinar qué pasó.
+
+### Lección aprendida: Sihoo y el User-Agent de Chrome (2026-10-02)
+
+Ya en la Raspberry, **Sihoo empezó a responder 429 en todas las
+comprobaciones** (`local_rate_limited`, `Retry-After: 60`) durante unas 30 h,
+a pesar de hacer solo ~4 peticiones al día. Descartamos la IP (el `curl` desde
+la propia Pi, con la misma IP pública que el PC, daba 200) y luego probamos
+cuatro formas de pedir lo mismo desde dentro del contenedor:
+
+| Cabeceras | Resultado |
+|---|---|
+| UA de Chrome + `Accept: application/json` (como hacía el bot) | **429** |
+| Solo UA de Chrome | **429** |
+| UA de `curl` | 200 |
+| Sin UA propio (el de Python) | 200 |
+
+Conclusión: **disfrazar el bot de navegador era lo que hacía que Shopify lo
+limitara.** Mi hipótesis (no confirmada) es que esa cadena exacta de Chrome,
+muy copiada en scrapers, comparte un límite saturado. Por eso el bot ahora se
+identifica con un User-Agent propio y honesto
+(`silla-sihoo-bot/1.0 (+URL del repo)`) para Shopify, que nadie más comparte.
+Amazon sí sigue usando el UA de navegador, porque lo necesita para servir la
+página normal.
 
 ## Cómo lee cada precio
 
