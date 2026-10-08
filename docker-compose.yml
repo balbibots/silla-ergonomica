@@ -5,6 +5,17 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+
+    # Chromium usa memoria compartida (/dev/shm) y Docker da solo 64 MB por
+    # defecto: con una pagina pesada como la de Amazon puede quedarse sin ella
+    # y cerrarse a mitad. 1 GB es de sobra (solo se reserva si se usa).
+    shm_size: "1gb"
+
+    # Un mini "init" dentro del contenedor que recoge los procesos zombi que
+    # deja un navegador al cerrarse (lo recomienda la documentacion de
+    # Playwright para ejecutarlo en Docker).
+    init: true
+
     volumes:
       # Sin esto, cada vez que reinicies el contenedor (o actualices la
       # imagen) el bot "olvidaria" todo y volveria a la primera ejecucion

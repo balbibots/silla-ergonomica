@@ -68,6 +68,37 @@ identifica con un User-Agent propio y honesto
 Amazon sí sigue usando el UA de navegador, porque lo necesita para servir la
 página normal.
 
+### Lección aprendida: Amazon y el CAPTCHA (2026-10-08)
+
+Ya en la Raspberry, Amazon empezó a fallar de forma intermitente: de 12 ciclos
+seguidos, solo 2 leyeron el precio. El mensaje de error decía "puede que esté
+agotado", pero no era eso: **Amazon respondía con una página de CAPTCHA**
+(HTTP 200, ~3 KB, con `validateCaptcha`), no con un error. Las cookies que
+manda (`ak_bmsc`, `bm_sv`) son de un sistema anti-bots de Akamai.
+
+Medido el mismo día desde la IP de casa (la misma que usa la Raspberry):
+
+| Forma de pedir la ficha | Aciertos |
+|---|---|
+| Cliente HTTP del bot (Python `urllib`) | 1 de 4 (y 2 de 12 ciclos en la Pi) |
+| HTTP + cookies de sesión + cabeceras completas de navegador | **0 de 4** |
+| **Chromium real automatizado (Playwright)** | **6 de 6** |
+
+Por eso Amazon se lee ahora con un navegador real. Detalles que importan:
+
+- **El reintento tras un CAPTCHA espera 60 s** (`ESPERA_CAPTCHA_SEG`), no 5:
+  una segunda petición inmediata es justo lo que dispara el CAPTCHA.
+- **El mensaje de error dice la causa real** (CAPTCHA, o "la página no trae el
+  precio" con su tamaño y título), en vez de adivinar.
+- El navegador es nuevo y sin cookies en cada comprobación, y se presenta sin
+  la marca `HeadlessChrome` (es el mismo Chromium, solo que sin el rótulo de
+  "controlado por software").
+- **Coste:** la imagen de Docker pasa a ocupar ~2 GB en disco (~1 GB de
+  descarga) y cada comprobación de Amazon usa unos cientos de MB de RAM
+  durante unos segundos.
+- **No hay garantía:** Amazon puede endurecer su anti-bots en cualquier
+  momento. Si vuelve a fallar, el log lo dirá con claridad.
+
 ## Cómo lee cada precio
 
 **Sihoo**: `https://eu.sihoo.com/.../sihoo-doro-c300-ergonomischer-stuhl.js`
@@ -77,11 +108,21 @@ si algún día quieres vigilar el negro o la versión con reposapiés en vez de
 o además de la blanca, hay que cambiar/añadir ese `variant_id` (dímelo y lo
 saco de la misma URL `.js`).
 
-**Amazon**: dentro del HTML de la ficha hay un bloque de JavaScript con los
-datos de la buybox: `"desktop_buybox_group_1":[{"displayPrice":"379,99
-€","priceAmount":379.99,...}]`. El bot extrae ese número con una expresión
-regular. Es el mismo principio que usan camelcamelcamel o Keepa, solo que a
-menor escala.
+**Amazon**: se carga la ficha con un **navegador real** (Chromium, vía
+Playwright) y se lee el precio del HTML ya pintado. Se prueban tres "anclas",
+de más a menos fiable, y gana la primera que aparezca:
+
+1. Un bloque de datos embebido con el precio de la buybox:
+   `"desktop_buybox_group_1":[{"displayPrice":"379,99 €","priceAmount":379.99,...}]`
+2. El atributo `data-csa-c-price-to-pay="336.99"` de la opción de compra "NEW"
+   (lo encontró el propio usuario inspeccionando la página; solo existe una vez
+   que el navegador ha ejecutado el JavaScript de Amazon, y por eso con una
+   petición HTTP simple no se veía).
+3. El texto visible del precio (`apex-pricetopay-value`), con formato español
+   (`1.299,00€` → 1299.0).
+
+`AMAZON_MODO=http` fuerza el modo antiguo, sin navegador (útil para depurar);
+con `auto` (por defecto) se usa el navegador si Playwright está instalado.
 
 ## Qué te avisa (y qué no)
 
@@ -177,6 +218,10 @@ docker compose up -d --build
 - `--build` construye la imagen la primera vez (y cada vez que cambies el
   código).
 
+**La primera vez tarda varios minutos**: descarga la imagen oficial de
+Playwright (~1 GB) y ocupa ~2 GB en disco. Las siguientes reconstrucciones son
+rápidas, porque esa base ya está en la Raspberry.
+
 ### 4. Comprobar que funciona
 
 ```bash
@@ -220,12 +265,34 @@ la propia Raspberry (se crea sola la primera vez), gracias al volumen del
 contenedor, o incluso lo borras y lo vuelves a crear, esa carpeta se queda
 intacta y el bot no "olvida" nada.
 
+### Quitar el bot y liberar el espacio
+
+`docker compose down` solo borra el **contenedor**; la imagen (los ~2 GB) se
+queda en disco. Para liberarlos, desde la carpeta del proyecto:
+
+```bash
+docker compose down --rmi local
+```
+
+```bash
+docker image rm mcr.microsoft.com/playwright/python:v1.63.0-noble
+```
+
+```bash
+docker builder prune -f
+```
+
+El primero borra el contenedor y la imagen construida; el segundo, la imagen
+base de Playwright (si no la usa otro proyecto); el tercero, la caché de
+construcción. Después puedes borrar la carpeta del proyecto, que incluye
+`./data/state.json`.
+
 ## Estructura
 
 ```
-check_price.py                      el script (solo libreria estandar)
+check_price.py                      el script (libreria estandar; Playwright solo para leer Amazon)
 loop_runner.py                      bucle que llama a check_price.py cada X horas (para Docker)
-Dockerfile                          la imagen del contenedor
+Dockerfile                          la imagen del contenedor (base oficial de Playwright: navegador incluido)
 docker-compose.yml                  como se arranca (volumen, variables, reinicio automatico)
 .env.example                        plantilla de configuracion (copiar a .env, con tus datos)
 .github/workflows/check-price.yml   solo boton manual ahora (ver seccion de arriba)

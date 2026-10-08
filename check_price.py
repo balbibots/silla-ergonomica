@@ -22,6 +22,7 @@ Variables de entorno:
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -46,6 +47,16 @@ ESPERA_ENTRE_REINTENTOS_SEG = float(os.environ.get("ESPERA_ENTRE_REINTENTOS_SEG"
 # Si el servidor responde 429 con "Retry-After", esperamos lo que pide (en vez
 # de los 5s genericos), siempre que no sea absurdamente largo.
 MAX_ESPERA_RETRY_AFTER_SEG = float(os.environ.get("MAX_ESPERA_RETRY_AFTER_SEG", "120"))
+
+# Cuanto esperar antes de reintentar tras un CAPTCHA de Amazon. Reintentar a los
+# 5s (lo normal) es lo peor: una segunda peticion inmediata es lo que lo dispara.
+ESPERA_CAPTCHA_SEG = float(os.environ.get("ESPERA_CAPTCHA_SEG", "60"))
+
+# Como leer Amazon: "auto" (navegador si hay Playwright), "navegador" o "http".
+AMAZON_MODO = os.environ.get("AMAZON_MODO", "auto").lower()
+AMAZON_ESPERA_PAGINA_SEG = float(os.environ.get("AMAZON_ESPERA_PAGINA_SEG", "20"))
+# Quita la marca de "navegador controlado por software".
+AMAZON_ARGS_NAVEGADOR = ["--disable-blink-features=AutomationControlled"]
 
 # User-Agent de navegador: SOLO para Amazon, que lo necesita para servir la
 # pagina normal.
@@ -187,42 +198,153 @@ def fetch_shopify(producto: dict) -> tuple[float, bool, str]:
     return precio, bool(variante.get("available", False)), data.get("title", producto["nombre"])
 
 
-# Ancla estable dentro del HTML de Amazon: un bloque JSON embebido con el
-# precio de la buybox. Mas fiable que parsear los <span> visibles, pero
-# sigue siendo HTML scraping - si Amazon rediseña la pagina, esto puede
-# romperse. A diferencia de Shopify, Amazon no tiene un endpoint publico.
+# --------------------------------------------------------------------------
+# Amazon
+#
+# Amazon protege sus fichas con un sistema anti-bots (cookies ak_bmsc / bm_sv,
+# de Akamai): con peticiones HTTP simples sirve una pagina de CAPTCHA (HTTP 200,
+# ~3 KB) la mayor parte de las veces. Medido el 2026-10-08 desde la IP de casa:
+# cliente HTTP -> ~1 acierto de cada 4 peticiones (en la Raspberry, 2 de 12
+# ciclos); Chromium real (Playwright) -> 6 de 6. Por eso el modo por defecto es
+# el navegador real; el cliente HTTP queda como alternativa.
+# --------------------------------------------------------------------------
+
+# Anclas para sacar el precio, de mas a menos fiable. El HTML renderizado por un
+# navegador conserva el JSON embebido, asi que la primera sirve en ambos modos.
 _PATRON_PRECIO_AMAZON = re.compile(
     r'"desktop_buybox_group_1":\[\{"displayPrice":"[^"]*","priceAmount":([\d.]+)'
 )
+# Atributo que Amazon anade por JavaScript en la opcion de compra "NEW".
+_PATRON_ATRIBUTO_AMAZON = re.compile(
+    r'data-csa-c-buying-option-type="NEW"[^>]*?data-csa-c-price-to-pay="([\d.]+)"'
+)
+# Texto visible del precio a pagar: <span ...apex-pricetopay-value...><span class="a-offscreen">336,99
+_PATRON_VISIBLE_AMAZON = re.compile(
+    r'apex-pricetopay-value[^>]*>\s*<span class="a-offscreen">\s*([\d.,]+)'
+)
 
 
-def fetch_amazon(producto: dict) -> tuple[float, bool, str]:
-    """Scraping del HTML de Amazon. Fragil por diseño: no hay API publica.
+class ErrorCaptcha(RuntimeError):
+    """Amazon ha servido su pagina de CAPTCHA en lugar de la ficha."""
 
-    No se comprueba disponibilidad de forma fiable aqui (a diferencia de
-    Shopify) - si no se encuentra el precio, puede ser tanto que este
-    agotado como que Amazon haya cambiado la pagina o bloqueado la
-    peticion. Se trata siempre como un error, nunca como "agotado".
-    """
+
+def _precio_es(texto: str) -> float:
+    """'1.299,00' -> 1299.0 ; '336,99' -> 336.99"""
+    return float(texto.replace(".", "").replace(",", "."))
+
+
+def _extraer_precio_amazon(html: str) -> float | None:
+    m = _PATRON_PRECIO_AMAZON.search(html)
+    if m:
+        return float(m.group(1))
+    m = _PATRON_ATRIBUTO_AMAZON.search(html)
+    if m:
+        return float(m.group(1))
+    m = _PATRON_VISIBLE_AMAZON.search(html)
+    if m:
+        return _precio_es(m.group(1))
+    return None
+
+
+def _es_captcha_amazon(html: str) -> bool:
+    return "validateCaptcha" in html or "api-services-support@amazon.com" in html
+
+
+def _precio_o_error_amazon(html: str) -> float:
+    """Devuelve el precio del HTML o lanza el error MAS ESPECIFICO posible
+    (captcha / pagina sin precio), para que el aviso explique la causa real."""
+    precio = _extraer_precio_amazon(html)
+    if precio is not None:
+        if precio <= 0:
+            raise RuntimeError("Precio sospechoso (%s). Mejor revisarlo a mano." % precio)
+        return precio
+    if _es_captcha_amazon(html):
+        raise ErrorCaptcha(
+            "Amazon ha servido un CAPTCHA (anti-bots) en lugar de la ficha del producto."
+        )
+    titulo = re.search(r"<title>([^<]*)</title>", html)
+    raise RuntimeError(
+        "La pagina de Amazon no trae el precio (%d bytes, titulo: %r). Puede que el "
+        "producto este agotado o que Amazon haya cambiado el diseno de la pagina."
+        % (len(html), (titulo.group(1).strip()[:80] if titulo else "sin titulo"))
+    )
+
+
+def fetch_amazon_http(producto: dict) -> tuple[float, bool, str]:
+    """Alternativa ligera, sin navegador: sufre muchos CAPTCHA (ver arriba)."""
     cuerpo = _descargar(
         producto["url"],
         {"User-Agent": UA, "Accept-Language": "es-ES,es;q=0.9"},
     )
-    html = cuerpo.decode("utf-8", errors="ignore")
-
-    m = _PATRON_PRECIO_AMAZON.search(html)
-    if not m:
-        raise RuntimeError(
-            "No he podido leer el precio en la pagina de Amazon (puede que "
-            "este agotado, que Amazon haya bloqueado la peticion, o que "
-            "haya cambiado el diseno de la pagina)."
-        )
-
-    precio = float(m.group(1))
-    if precio <= 0:
-        raise RuntimeError("Precio sospechoso (%s). Mejor revisarlo a mano." % precio)
-
+    precio = _precio_o_error_amazon(cuerpo.decode("utf-8", errors="ignore"))
     return precio, True, producto["nombre"]
+
+
+def fetch_amazon_navegador(producto: dict) -> tuple[float, bool, str]:
+    """Carga la ficha con un Chromium real (Playwright), nuevo y sin cookies en
+    cada comprobacion, y lee el precio del HTML ya renderizado."""
+    from playwright.sync_api import sync_playwright  # import perezoso: solo si hace falta
+
+    with sync_playwright() as p:
+        ruta = os.environ.get("CHROMIUM_PATH")
+        if ruta:
+            navegador = p.chromium.launch(executable_path=ruta, headless=True,
+                                          args=AMAZON_ARGS_NAVEGADOR)
+        else:
+            try:
+                # "chromium" = Chromium completo en el nuevo modo headless, mas
+                # parecido a un navegador normal que el headless-shell por defecto.
+                navegador = p.chromium.launch(channel="chromium", headless=True,
+                                              args=AMAZON_ARGS_NAVEGADOR)
+            except Exception:  # noqa: BLE001
+                navegador = p.chromium.launch(headless=True, args=AMAZON_ARGS_NAVEGADOR)
+        try:
+            # El UA por defecto de un navegador headless dice "HeadlessChrome":
+            # se lo quitamos (sin inventar nada: es el mismo Chromium).
+            pagina_vacia = navegador.new_page()
+            ua = pagina_vacia.evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
+            pagina_vacia.close()
+
+            pagina = navegador.new_context(
+                user_agent=ua, locale="es-ES", timezone_id="Europe/Madrid",
+                viewport={"width": 1366, "height": 768},
+            ).new_page()
+            pagina.goto(producto["url"], wait_until="domcontentloaded", timeout=45000)
+
+            # La ficha se acaba de pintar con JavaScript: miramos el HTML varias
+            # veces hasta que aparezca el precio o se vea que es un CAPTCHA.
+            limite = time.monotonic() + AMAZON_ESPERA_PAGINA_SEG
+            html = ""
+            while True:
+                try:
+                    html = pagina.content()
+                except Exception:  # noqa: BLE001 - navegacion en curso
+                    html = ""
+                if _extraer_precio_amazon(html) is not None or _es_captcha_amazon(html):
+                    break
+                if time.monotonic() >= limite:
+                    break
+                pagina.wait_for_timeout(1000)
+        finally:
+            navegador.close()
+
+    return _precio_o_error_amazon(html), True, producto["nombre"]
+
+
+def fetch_amazon(producto: dict) -> tuple[float, bool, str]:
+    """Elige el metodo segun AMAZON_MODO: "navegador", "http", o "auto" (por
+    defecto: navegador si Playwright esta instalado, si no HTTP).
+
+    No se comprueba disponibilidad de forma fiable aqui (a diferencia de
+    Shopify): sin precio puede ser agotado, CAPTCHA o cambio de la pagina. Se
+    trata siempre como un error, nunca como "agotado".
+    """
+    modo = AMAZON_MODO
+    if modo == "auto":
+        modo = "navegador" if importlib.util.find_spec("playwright") else "http"
+    if modo == "navegador":
+        return fetch_amazon_navegador(producto)
+    return fetch_amazon_http(producto)
 
 
 FETCHERS = {"shopify": fetch_shopify, "amazon": fetch_amazon}
@@ -276,7 +398,9 @@ def fetch_con_reintento(fetcher, producto: dict) -> tuple[float, bool, str]:
                 break
 
             espera = ESPERA_ENTRE_REINTENTOS_SEG
-            if isinstance(exc, ErrorHTTP) and exc.status == 429:
+            if isinstance(exc, ErrorCaptcha):
+                espera = ESPERA_CAPTCHA_SEG
+            elif isinstance(exc, ErrorHTTP) and exc.status == 429:
                 # Reintentar a los 5s un "demasiadas peticiones" no sirve de
                 # nada: hacemos caso al servidor. Si pide esperar mas de lo
                 # razonable, no insistimos (mejor fallar y avisar).
