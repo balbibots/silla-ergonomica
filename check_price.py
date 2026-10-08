@@ -342,6 +342,7 @@ def fetch_amazon(producto: dict) -> tuple[float, bool, str]:
     modo = AMAZON_MODO
     if modo == "auto":
         modo = "navegador" if importlib.util.find_spec("playwright") else "http"
+    print("  Amazon: leyendo con %s" % ("navegador real (Chromium)" if modo == "navegador" else "peticion HTTP"))
     if modo == "navegador":
         return fetch_amazon_navegador(producto)
     return fetch_amazon_http(producto)

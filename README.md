@@ -99,6 +99,17 @@ Por eso Amazon se lee ahora con un navegador real. Detalles que importan:
 - **No hay garantía:** Amazon puede endurecer su anti-bots en cualquier
   momento. Si vuelve a fallar, el log lo dirá con claridad.
 
+**Segundo tropiezo, de despliegue (el mismo día).** La imagen oficial de
+Playwright "para Python" trae los navegadores pero **no** el paquete de Python
+(lo instala en un entorno temporal y lo borra al construirse). El primer
+despliegue no encontraba `playwright` y el modo `auto` caía **en silencio** al
+modo HTTP, así que los CAPTCHA que seguían saliendo eran los del cliente
+antiguo, no los del navegador. Ahora el `Dockerfile` instala `playwright==1.63.0`
+explícitamente (y comprueba en la construcción que se puede importar), fija
+`AMAZON_MODO=navegador` para que un Playwright roto dé un error claro en vez de
+degradarse sin avisar, y el log indica en cada comprobación con qué método se
+lee Amazon (`Amazon: leyendo con navegador real (Chromium)`).
+
 ## Cómo lee cada precio
 
 **Sihoo**: `https://eu.sihoo.com/.../sihoo-doro-c300-ergonomischer-stuhl.js`
