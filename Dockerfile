@@ -18,7 +18,14 @@ WORKDIR /app
 RUN pip install --no-cache-dir playwright==1.63.0 \
     && python3 -c "from importlib.metadata import version; import playwright.sync_api; print('Playwright', version('playwright'), 'importable')"
 
-# Sihoo solo usa la libreria estandar.
+# Sihoo se lee con curl (ver _descargar_curl en check_price.py: responde 429 al
+# cliente HTTP de Python pero no a curl). Se instala por si la imagen no lo trae.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --version | head -n 1
+
+# El resto del bot solo usa la libreria estandar.
 COPY check_price.py loop_runner.py ./
 
 # Para que los mensajes salgan al instante en "docker compose logs".

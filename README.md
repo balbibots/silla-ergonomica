@@ -73,6 +73,19 @@ identifica con un User-Agent propio y honesto
 Amazon sí sigue usando el UA de navegador, porque lo necesita para servir la
 página normal.
 
+### Segunda parte: Sihoo y el cliente HTTP de Python (2026-10-24)
+
+Con el cambio a la B100, Sihoo volvió a responder `429 too many requests` en
+cada comprobación. Esta vez no era el User-Agent: desde la misma IP, el cliente
+HTTP de Python (`urllib`) recibía 429 siempre (horas después y con cualquier
+combinación de cabeceras), mientras que `curl` con **el mismo** User-Agent
+honesto recibía 200. El límite depende del tipo de cliente, no de cuántas
+peticiones hacemos (una cada 6 h).
+
+Por eso Sihoo se lee ahora con `curl` (instalado en la imagen de Docker),
+manteniendo el UA propio `silla-sihoo-bot`. Si `curl` no estuviera, el bot
+vuelve a `urllib`.
+
 ### Lección aprendida: Amazon y el CAPTCHA (2026-10-08)
 
 Ya en la Raspberry, Amazon empezó a fallar de forma intermitente: de 12 ciclos

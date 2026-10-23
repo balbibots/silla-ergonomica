@@ -31,6 +31,8 @@ import importlib.util
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 import urllib.error
@@ -205,12 +207,38 @@ def _descargar(url: str, headers: dict, timeout: float = 30) -> bytes:
         raise ErrorHTTP(exc.code, exc.headers.get("Retry-After"), cuerpo) from None
 
 
+def _descargar_curl(url: str, headers: dict, timeout: float = 30) -> bytes:
+    """Lo mismo que _descargar, pero con el programa curl. Aprendido a la mala
+    (2026-10-24): Sihoo respondia 429 "too many requests" a TODAS las
+    peticiones del cliente HTTP de Python (urllib), incluso horas despues y con
+    cualquier combinacion de cabeceras, mientras que curl con el MISMO
+    User-Agent daba 200 desde la misma IP. No es por cuantas peticiones
+    hacemos (una cada 6 h), sino por el tipo de cliente."""
+    cmd = ["curl", "-sS", "-L", "--max-time", str(int(timeout)),
+           "-w", "\n%{http_code}\n%header{retry-after}"]
+    for clave, valor in headers.items():
+        cmd += ["-H", "%s: %s" % (clave, valor)]
+    cmd.append(url)
+    res = subprocess.run(cmd, capture_output=True, timeout=timeout + 15)
+    if res.returncode != 0:
+        raise RuntimeError("curl fallo (codigo %d): %s"
+                           % (res.returncode, res.stderr.decode("utf-8", "replace").strip()[:150]))
+    cuerpo, estado, retry_after = res.stdout.rsplit(b"\n", 2)
+    estado = int(estado)
+    if estado >= 400:
+        texto = " ".join(cuerpo[:300].decode("utf-8", errors="replace").split())
+        raise ErrorHTTP(estado, retry_after.decode().strip() or None, texto)
+    return cuerpo
+
+
 def fetch_shopify(producto: dict) -> tuple[float, bool, str]:
     """Endpoint JSON nativo de Shopify (igual que el bot de Yepoda).
     Robusto: no depende de la maquetacion de la pagina. Se identifica con
-    UA_BOT, NO con un UA de navegador (ver el comentario de UA_BOT)."""
+    UA_BOT, NO con un UA de navegador (ver el comentario de UA_BOT). Se pide
+    con curl si esta instalado (ver _descargar_curl); si no, con urllib."""
     url = producto["url"].rstrip("/") + ".js"
-    cuerpo = _descargar(url, {"User-Agent": UA_BOT, "Accept": "application/json"})
+    descargar = _descargar_curl if shutil.which("curl") else _descargar
+    cuerpo = descargar(url, {"User-Agent": UA_BOT, "Accept": "application/json"})
     data = json.loads(cuerpo.decode("utf-8"))
 
     variantes = {str(v["id"]): v for v in data.get("variants", [])}
