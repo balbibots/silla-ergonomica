@@ -19,9 +19,14 @@ Variables de entorno:
   NOTIFY_ON_ANY_CHANGE  "true" avisa de CUALQUIER cambio de precio, no solo
                         cuando cruza el umbral (por defecto "true")
   STATE_FILE            donde se guarda la memoria entre ejecuciones
+  HISTORY_FILE          CSV con todas las lecturas de precio (por defecto,
+                        historico_precios.csv junto a STATE_FILE)
+  FALLOS_ANTES_DE_AVISAR  ciclos seguidos fallando antes de avisar (def. 3)
+  AMAZON_CADA_HORAS     cada cuantas horas se lee Amazon (por defecto 12)
 """
 from __future__ import annotations
 
+import csv
 import importlib.util
 import json
 import os
@@ -37,6 +42,15 @@ HEARTBEAT_DAYS = float(os.environ.get("HEARTBEAT_DAYS", "7"))
 NOTIFY_ON_ANY_CHANGE = os.environ.get("NOTIFY_ON_ANY_CHANGE", "true").lower() == "true"
 STATE_FILE = os.environ.get("STATE_FILE", "state.json")
 ERROR_REMINDER_HOURS = 24
+HISTORY_FILE = os.environ.get(
+    "HISTORY_FILE",
+    os.path.join(os.path.dirname(STATE_FILE) or ".", "historico_precios.csv"),
+)
+
+# Un fallo suelto (un CAPTCHA, un 429) se arregla casi siempre solo en el
+# siguiente ciclo: solo avisamos cuando un producto lleva N ciclos SEGUIDOS sin
+# poder leerse (con el bucle de 6 h y N=3, unas 12-18 h fallando).
+FALLOS_ANTES_DE_AVISAR = int(os.environ.get("FALLOS_ANTES_DE_AVISAR", "3"))
 
 # Reintentos ante un fallo de red/bloqueo puntual (sobre todo pensado para
 # Amazon, que a veces bloquea una peticion suelta pero no la siguiente unos
@@ -55,6 +69,12 @@ ESPERA_CAPTCHA_SEG = float(os.environ.get("ESPERA_CAPTCHA_SEG", "60"))
 # Como leer Amazon: "auto" (navegador si hay Playwright), "navegador" o "http".
 AMAZON_MODO = os.environ.get("AMAZON_MODO", "auto").lower()
 AMAZON_ESPERA_PAGINA_SEG = float(os.environ.get("AMAZON_ESPERA_PAGINA_SEG", "20"))
+# Menos visitas a Amazon = menos CAPTCHA. Tras una lectura CORRECTA no se vuelve
+# a mirar hasta pasadas estas horas; tras un fallo, se reintenta en el siguiente
+# ciclo. Para una silla, un precio con unas horas de retraso no cambia nada.
+AMAZON_CADA_HORAS = float(os.environ.get("AMAZON_CADA_HORAS", "12"))
+# Pausa entre dos fichas de Amazon en el mismo ciclo (no pedirlas de golpe).
+ESPERA_ENTRE_AMAZON_SEG = float(os.environ.get("ESPERA_ENTRE_AMAZON_SEG", "60"))
 # Quita la marca de "navegador controlado por software".
 AMAZON_ARGS_NAVEGADOR = ["--disable-blink-features=AutomationControlled"]
 
@@ -76,6 +96,8 @@ UA_BOT = "silla-sihoo-bot/1.0 (+https://github.com/balbibots/silla-ergonomica)"
 # --------------------------------------------------------------------------
 # Los productos a vigilar. Anadir uno nuevo = anadir una entrada aqui.
 # "umbral_eur": te avisa la primera vez que el precio baje de ese numero.
+# En Amazon el precio vigilado es el FINAL: si la ficha tiene un cupon
+# ("Aplicar cupon de 45 EUR"), ya va descontado.
 # Por defecto lo he puesto al precio de hoy (2026-10-23), para que te avise
 # en cuanto baje AUNQUE SEA UN CENTIMO de lo que cuesta ahora mismo. Sube el
 # numero si solo quieres que te avise a partir de una rebaja mas grande.
@@ -95,6 +117,14 @@ PRODUCTOS = [
         "tipo": "amazon",
         "url": "https://www.amazon.es/SIHOO-B100-Oficina-Soporte-Adaptable/dp/B0G5WQ65P2",
         "umbral_eur": 169.99,
+    },
+    {
+        "id": "silla_flexispot_ergox_lite_amazon",
+        "nombre": "Flexispot ErgoX Lite (Amazon.es, beige)",
+        "tipo": "amazon",
+        "url": "https://www.amazon.es/dp/B0H3ZVDKYV",
+        # 2026-10-24: 275,49 EUR con un cupon de 45 EUR -> 230,49 EUR.
+        "umbral_eur": 230.49,
     },
 ]
 
@@ -224,6 +254,13 @@ _PATRON_VISIBLE_AMAZON = re.compile(
 )
 
 
+# Cupon de la ficha: <span ... class="couponLabelText"> Aplicar cupón de 45€
+# (o "del 10 %"). Solo aparece en la buybox del propio producto.
+_PATRON_CUPON_AMAZON = re.compile(
+    r'class="couponLabelText">\s*Aplicar cup(?:ó|o|&oacute;)n de(?:l)?\s*([\d.,]+)\s*(?:&nbsp;|\s)*(€|%|&euro;)'
+)
+
+
 class ErrorCaptcha(RuntimeError):
     """Amazon ha servido su pagina de CAPTCHA en lugar de la ficha."""
 
@@ -246,17 +283,47 @@ def _extraer_precio_amazon(html: str) -> float | None:
     return None
 
 
+def _cupon_amazon(html: str, precio: float) -> tuple[float, str | None]:
+    """Aplica el cupon de la ficha, si lo hay. Devuelve (precio_final, texto
+    del cupon o None)."""
+    m = _PATRON_CUPON_AMAZON.search(html)
+    if not m:
+        return precio, None
+    try:
+        valor = _precio_es(m.group(1))
+    except ValueError:
+        return precio, None
+    if m.group(2) == "%":
+        final, texto = precio * (1 - valor / 100.0), "%g %%" % valor
+    else:
+        final, texto = precio - valor, "%.2f €" % valor
+    if final <= 0 or final >= precio:
+        return precio, None  # algo raro: mejor ignorar el cupon que inventar
+    return round(final, 2), texto
+
+
 def _es_captcha_amazon(html: str) -> bool:
     return "validateCaptcha" in html or "api-services-support@amazon.com" in html
 
 
-def _precio_o_error_amazon(html: str) -> float:
+def _asin(url: str) -> str | None:
+    m = re.search(r"/dp/([A-Z0-9]{10})", url)
+    return m.group(1) if m else None
+
+
+def _precio_o_error_amazon(html: str, asin: str | None = None) -> float:
     """Devuelve el precio del HTML o lanza el error MAS ESPECIFICO posible
     (captcha / pagina sin precio), para que el aviso explique la causa real."""
     precio = _extraer_precio_amazon(html)
     if precio is not None:
         if precio <= 0:
             raise RuntimeError("Precio sospechoso (%s). Mejor revisarlo a mano." % precio)
+        # Defensa extra: que el precio sea de NUESTRA ficha y no de otra (una
+        # redireccion a otra variante, una pagina de "productos similares"...).
+        if asin and asin not in html:
+            raise RuntimeError(
+                "La pagina de Amazon trae un precio, pero no es la ficha del ASIN %s." % asin
+            )
         return precio
     if _es_captcha_amazon(html):
         raise ErrorCaptcha(
@@ -270,17 +337,25 @@ def _precio_o_error_amazon(html: str) -> float:
     )
 
 
-def fetch_amazon_http(producto: dict) -> tuple[float, bool, str]:
+def _resultado_amazon(html: str, producto: dict) -> tuple:
+    """(precio_final, disponible, titulo, detalle). El detalle explica el
+    precio cuando hay cupon: {"precio_sin_cupon": 275.49, "cupon": "45.00 €"}."""
+    base = _precio_o_error_amazon(html, _asin(producto["url"]))
+    final, cupon = _cupon_amazon(html, base)
+    detalle = {"precio_sin_cupon": base, "cupon": cupon} if cupon else {}
+    return final, True, producto["nombre"], detalle
+
+
+def fetch_amazon_http(producto: dict) -> tuple:
     """Alternativa ligera, sin navegador: sufre muchos CAPTCHA (ver arriba)."""
     cuerpo = _descargar(
         producto["url"],
         {"User-Agent": UA, "Accept-Language": "es-ES,es;q=0.9"},
     )
-    precio = _precio_o_error_amazon(cuerpo.decode("utf-8", errors="ignore"))
-    return precio, True, producto["nombre"]
+    return _resultado_amazon(cuerpo.decode("utf-8", errors="ignore"), producto)
 
 
-def fetch_amazon_navegador(producto: dict) -> tuple[float, bool, str]:
+def fetch_amazon_navegador(producto: dict) -> tuple:
     """Carga la ficha con un Chromium real (Playwright), nuevo y sin cookies en
     cada comprobacion, y lee el precio del HTML ya renderizado."""
     from playwright.sync_api import sync_playwright  # import perezoso: solo si hace falta
@@ -328,10 +403,10 @@ def fetch_amazon_navegador(producto: dict) -> tuple[float, bool, str]:
         finally:
             navegador.close()
 
-    return _precio_o_error_amazon(html), True, producto["nombre"]
+    return _resultado_amazon(html, producto)
 
 
-def fetch_amazon(producto: dict) -> tuple[float, bool, str]:
+def fetch_amazon(producto: dict) -> tuple:
     """Elige el metodo segun AMAZON_MODO: "navegador", "http", o "auto" (por
     defecto: navegador si Playwright esta instalado, si no HTTP).
 
@@ -354,9 +429,17 @@ FETCHERS = {"shopify": fetch_shopify, "amazon": fetch_amazon}
 # --------------------------------------------------------------------------
 
 def handle_error(estado_producto: dict, nombre: str, mensaje: str) -> bool:
-    """Avisa de que un producto concreto ha fallado, maximo 1 vez/24h.
+    """Avisa de que un producto concreto ha fallado, pero solo si lleva
+    FALLOS_ANTES_DE_AVISAR ciclos seguidos fallando, y maximo 1 vez/24h.
     Devuelve True si se ha mandado un aviso nuevo."""
-    print("ERROR (%s): %s" % (nombre, mensaje))
+    fallos = estado_producto.get("consecutive_failures", 0) + 1
+    estado_producto["consecutive_failures"] = fallos
+    print("ERROR (%s), fallo %d seguido: %s" % (nombre, fallos, mensaje))
+    if fallos < FALLOS_ANTES_DE_AVISAR:
+        print("  (aun no aviso: lo hare si sigue fallando %d ciclo(s) mas)"
+              % (FALLOS_ANTES_DE_AVISAR - fallos))
+        return False
+
     ahora = datetime.now(timezone.utc)
     anterior = estado_producto.get("last_error_notified_at")
 
@@ -371,8 +454,9 @@ def handle_error(estado_producto: dict, nombre: str, mensaje: str) -> bool:
         try:
             send_telegram(
                 "⚠️ <b>No he podido leer el precio</b>\n\n"
-                "<b>%s</b>\n<code>%s</code>\n\n"
-                "No te fíes del silencio de este producto hasta que se arregle." % (nombre, mensaje)
+                "<b>%s</b>\nLleva %d comprobaciones seguidas fallando. Último error:\n"
+                "<code>%s</code>\n\n"
+                "No te fíes del silencio de este producto hasta que se arregle." % (nombre, fallos, mensaje)
             )
             estado_producto["last_error_notified_at"] = ahora.isoformat()
             return True
@@ -381,7 +465,7 @@ def handle_error(estado_producto: dict, nombre: str, mensaje: str) -> bool:
     return False
 
 
-def fetch_con_reintento(fetcher, producto: dict) -> tuple[float, bool, str]:
+def fetch_con_reintento(fetcher, producto: dict) -> tuple:
     """Llama al fetcher del producto, reintentando ante un fallo puntual.
 
     Pensado sobre todo para Amazon: un bloqueo momentaneo de una peticion
@@ -419,6 +503,42 @@ def fetch_con_reintento(fetcher, producto: dict) -> tuple[float, bool, str]:
     raise ultimo_error
 
 
+def toca_comprobar(producto: dict, estado_producto: dict, ahora: datetime) -> bool:
+    """Amazon solo se lee cada AMAZON_CADA_HORAS desde la ultima lectura
+    CORRECTA (si la ultima fallo, se reintenta ya). El resto, siempre."""
+    if producto["tipo"] != "amazon" or AMAZON_CADA_HORAS <= 0:
+        return True
+    if estado_producto.get("consecutive_failures"):
+        return True
+    ultima = estado_producto.get("last_checked_at")
+    if not ultima:
+        return True
+    try:
+        pasado = ahora - datetime.fromisoformat(ultima)
+    except ValueError:
+        return True
+    # 30 min de margen: el bucle no cae siempre exactamente a la misma hora.
+    return pasado >= timedelta(hours=AMAZON_CADA_HORAS) - timedelta(minutes=30)
+
+
+def guardar_historico(producto: dict, precio: float, disponible: bool, detalle: dict) -> None:
+    """Una fila por lectura correcta, para poder ver la evolucion del precio."""
+    try:
+        nuevo = not os.path.exists(HISTORY_FILE) or os.path.getsize(HISTORY_FILE) == 0
+        with open(HISTORY_FILE, "a", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            if nuevo:
+                w.writerow(["fecha_utc", "id", "producto", "precio_eur",
+                            "disponible", "precio_sin_cupon_eur", "cupon"])
+            sin_cupon = detalle.get("precio_sin_cupon")
+            w.writerow([datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        producto["id"], producto["nombre"], "%.2f" % precio, disponible,
+                        "%.2f" % sin_cupon if sin_cupon is not None else "",
+                        detalle.get("cupon") or ""])
+    except OSError as exc:
+        print("  (no he podido guardar el historico: %s)" % exc)
+
+
 def procesar_producto(producto: dict, estado: dict) -> bool:
     """Comprueba un producto y manda los avisos que correspondan.
     Devuelve True si se ha mandado algun mensaje (para el heartbeat)."""
@@ -427,17 +547,31 @@ def procesar_producto(producto: dict, estado: dict) -> bool:
     fetcher = FETCHERS[producto["tipo"]]
 
     try:
-        precio, disponible, titulo = fetch_con_reintento(fetcher, producto)
+        precio, disponible, titulo, *extra = fetch_con_reintento(fetcher, producto)
     except Exception as exc:  # noqa: BLE001
         return handle_error(estado_producto, producto["nombre"], "%s: %s" % (type(exc).__name__, exc))
+    detalle = extra[0] if extra else {}
 
-    print("[%s] %.2f EUR | disponible: %s | umbral: %.2f EUR"
-          % (producto["nombre"], precio, disponible, producto["umbral_eur"]))
+    cupon_log = ""
+    if detalle.get("cupon"):
+        cupon_log = " (%.2f sin cupon, cupon %s)" % (detalle["precio_sin_cupon"], detalle["cupon"])
+    print("[%s] %.2f EUR%s | disponible: %s | umbral: %.2f EUR"
+          % (producto["nombre"], precio, cupon_log, disponible, producto["umbral_eur"]))
+    guardar_historico(producto, precio, disponible, detalle)
+
+    # Linea que explica el precio en los avisos cuando incluye un cupon.
+    nota_cupon = ""
+    if detalle.get("cupon"):
+        nota_cupon = ("\n🎟️ Con cupón de %s (sin cupón: %.2f €). Hay que marcarlo en la "
+                      "ficha antes de comprar." % (detalle["cupon"], detalle["precio_sin_cupon"]))
+    elif estado_producto.get("last_coupon"):
+        nota_cupon = "\n🎟️ El cupón de %s ya no aparece." % estado_producto["last_coupon"]
 
     anterior_precio = estado_producto.get("last_price")
     ya_avisado = estado_producto.get("below_threshold_notified", False)
     anterior_disponible = estado_producto.get("last_available")
     estado_producto.pop("last_error_notified_at", None)
+    estado_producto.pop("consecutive_failures", None)
 
     algo_enviado = False
     try:
@@ -458,16 +592,18 @@ def procesar_producto(producto: dict, estado: dict) -> bool:
                 diferencia = "\nAntes: %.2f €." % anterior_precio
             send_telegram(
                 "🔥 <b>¡%s ha bajado de %.0f €!</b>\n\n"
-                "Ahora: <b>%.2f €</b>%s\nStock: %s\n\n%s"
-                % (producto["nombre"], producto["umbral_eur"], precio, diferencia, stock, producto["url"])
+                "Ahora: <b>%.2f €</b>%s%s\nStock: %s\n\n%s"
+                % (producto["nombre"], producto["umbral_eur"], precio, diferencia, nota_cupon,
+                   stock, producto["url"])
             )
             estado_producto["below_threshold_notified"] = True
             algo_enviado = True
 
         elif precio >= producto["umbral_eur"] and ya_avisado:
             send_telegram(
-                "↗️ <b>%s ha vuelto a subir</b>\n\nAhora: %.2f €\n\n"
-                "Te aviso de nuevo si baja de %.0f €." % (producto["nombre"], precio, producto["umbral_eur"])
+                "↗️ <b>%s ha vuelto a subir</b>\n\nAhora: %.2f €%s\n\n"
+                "Te aviso de nuevo si baja de %.0f €."
+                % (producto["nombre"], precio, nota_cupon, producto["umbral_eur"])
             )
             estado_producto["below_threshold_notified"] = False
             algo_enviado = True
@@ -478,9 +614,10 @@ def procesar_producto(producto: dict, estado: dict) -> bool:
             # no solo avisos de "chollo".
             flecha = "📉" if precio < anterior_precio else "📈"
             send_telegram(
-                "%s <b>%s ha cambiado de precio</b>\n\n%.2f € → <b>%.2f €</b>\nStock: %s\n\n"
+                "%s <b>%s ha cambiado de precio</b>\n\n%.2f € → <b>%.2f €</b>%s\nStock: %s\n\n"
                 "(Tu aviso de chollo sigue puesto en %.0f €.)\n\n%s"
-                % (flecha, producto["nombre"], anterior_precio, precio, stock, producto["umbral_eur"], producto["url"])
+                % (flecha, producto["nombre"], anterior_precio, precio, nota_cupon, stock,
+                   producto["umbral_eur"], producto["url"])
             )
             algo_enviado = True
 
@@ -491,6 +628,10 @@ def procesar_producto(producto: dict, estado: dict) -> bool:
         return False
 
     estado_producto["last_price"] = precio
+    if detalle.get("cupon"):
+        estado_producto["last_coupon"] = detalle["cupon"]
+    else:
+        estado_producto.pop("last_coupon", None)
     estado_producto["last_available"] = disponible
     estado_producto["last_checked_at"] = datetime.now(timezone.utc).isoformat()
     return algo_enviado
@@ -547,7 +688,18 @@ def main() -> int:
 
     estado = load_state()
     hubo_eventos = False
+    ahora = datetime.now(timezone.utc)
+    amazon_leidos = 0
     for producto in PRODUCTOS:
+        if not toca_comprobar(producto, estado.setdefault(producto["id"], {}), ahora):
+            print("[%s] leido hace menos de %.0f h, se salta este ciclo"
+                  % (producto["nombre"], AMAZON_CADA_HORAS))
+            continue
+        if producto["tipo"] == "amazon":
+            if amazon_leidos and ESPERA_ENTRE_AMAZON_SEG > 0:
+                print("  pausa de %.0fs antes de la siguiente ficha de Amazon..." % ESPERA_ENTRE_AMAZON_SEG)
+                time.sleep(ESPERA_ENTRE_AMAZON_SEG)
+            amazon_leidos += 1
         if procesar_producto(producto, estado):
             hubo_eventos = True
 

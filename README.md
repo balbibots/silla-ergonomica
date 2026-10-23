@@ -1,13 +1,14 @@
-# Vigilante de precio — Sihoo B100
+# Vigilante de precio — sillas ergonómicas
 
 Mismo tipo de bot que [yepoda-price-bot](https://github.com/balbibots/yepoda-price-bot),
 pero generalizado para vigilar **varios productos de fuentes distintas** a la
-vez. De momento vigila dos:
+vez. De momento vigila tres:
 
 | Producto | Fuente | Último precio confirmado | Aviso si baja de |
 |---|---|---|---|
 | Sihoo B100, blanca | [Tienda oficial](https://eu.sihoo.com/es/products/sihoo-b100-ergonomic-office-chair-with-flip-up-armrest) | 199,99 € (2026-10-23) | 199,99 € |
 | Sihoo B100, blanca | [Amazon.es](https://www.amazon.es/SIHOO-B100-Oficina-Soporte-Adaptable/dp/B0G5WQ65P2) | 169,99 € (2026-10-23) | 169,99 € |
+| Flexispot ErgoX Lite, beige | [Amazon.es](https://www.amazon.es/dp/B0H3ZVDKYV) | 230,49 € con cupón de 45 € (275,49 € sin cupón, 2026-10-24) | 230,49 € |
 
 > Hasta el 2026-10-23 el bot vigilaba por error el modelo Doro C300; se cambió
 > al B100, que es el que se quería. Las lecciones de abajo se aprendieron con
@@ -139,6 +140,29 @@ de más a menos fiable, y gana la primera que aparezca:
 `AMAZON_MODO=http` fuerza el modo antiguo, sin navegador (útil para depurar);
 con `auto` (por defecto) se usa el navegador si Playwright está instalado.
 
+Además, en Amazon:
+
+- **Cupones.** Si la ficha tiene un cupón (`Aplicar cupón de 45€` o
+  `del 10 %`), el precio vigilado es el **final, con el cupón descontado**,
+  que es lo que pagarías. Los avisos explican el desglose ("con cupón de 45 €,
+  sin cupón: 275,49 €") y también avisan si el cupón desaparece (para ti es
+  una subida de precio). Ojo: en Amazon el cupón hay que **marcarlo** en la
+  ficha antes de comprar.
+- **Comprobación del ASIN.** El precio solo se acepta si la página es de
+  verdad la ficha de ese producto (el ASIN de la URL aparece en ella). Así una
+  redirección a otra variante no se cuela como cambio de precio.
+
+### Para que falle lo menos posible (2026-10-24)
+
+- **Amazon se lee cada 12 h, no cada 6** (`AMAZON_CADA_HORAS`), contando desde
+  la última lectura correcta. Menos visitas, menos CAPTCHA. Si una lectura
+  falla, se reintenta en el siguiente ciclo (6 h), sin esperar a las 12.
+- **Pausa de 60 s entre las dos fichas de Amazon** (`ESPERA_ENTRE_AMAZON_SEG`)
+  para no pedirlas de golpe.
+- **Solo avisa de un error tras 3 ciclos seguidos fallando**
+  (`FALLOS_ANTES_DE_AVISAR`). Un CAPTCHA o un 429 sueltos se arreglan solos en
+  el ciclo siguiente y no te llegan; si el problema persiste (~12-18 h), sí.
+
 ## Qué te avisa (y qué no)
 
 | Evento | ¿Avisa? |
@@ -146,8 +170,9 @@ con `auto` (por defecto) se usa el navegador si Playwright está instalado.
 | Un precio baja de su umbral | ✅ Una vez, hasta que vuelva a subir |
 | Un precio cambia (sube o baja) SIN cruzar el umbral | ✅ Con `NOTIFY_ON_ANY_CHANGE` (activado por defecto) — es el modo "seguimiento general": te enteras de cualquier movimiento de precio, no solo de las rebajas |
 | Sihoo se agota / vuelve a haber stock | ✅ (solo Sihoo — Amazon no lo detecta, ver arriba) |
-| Ha pasado una semana sin ningún aviso | ✅ Un único mensaje con el precio actual de **ambos** productos |
-| Uno de los dos falla al leer el precio | ✅ Máximo 1 vez / 24h, **solo del que falla** |
+| En Amazon aparece o desaparece un cupón | ✅ Como cambio de precio (el precio vigilado es el final, con cupón) |
+| Ha pasado una semana sin ningún aviso | ✅ Un único mensaje con el precio actual de **todos** los productos |
+| Un producto falla al leer el precio | ✅ Solo si lleva **3 comprobaciones seguidas** fallando; después, máximo 1 vez / 24 h y **solo del que falla** |
 | Todo sigue exactamente igual | ❌ Silencio |
 
 Si en algún momento quieres volver a que solo te avise de bajadas de precio "de chollo" (sin seguimiento general de cada subida y bajada), pon `NOTIFY_ON_ANY_CHANGE: "false"` en el workflow.
@@ -251,7 +276,12 @@ Bot arrancado en modo bucle. Comprobando cada 6.0 horas.
 [2026-09-30T...] Nueva comprobacion...
 [Sihoo B100 (tienda oficial, blanca)] 199.99 EUR | disponible: True | umbral: 199.99 EUR
 [Sihoo B100 (Amazon.es, blanca)] 169.99 EUR | disponible: True | umbral: 169.99 EUR
+  pausa de 60s antes de la siguiente ficha de Amazon...
+[Flexispot ErgoX Lite (Amazon.es, beige)] 230.49 EUR (275.49 sin cupon, cupon 45.00 €) | disponible: True | umbral: 230.49 EUR
 ```
+
+En los ciclos en los que a Amazon aún no le toca (cada 12 h), verás
+`leido hace menos de 12 h, se salta este ciclo`.
 
 `Ctrl+C` sale de los logs sin parar el contenedor (sigue corriendo detrás).
 
@@ -279,6 +309,14 @@ la propia Raspberry (se crea sola la primera vez), gracias al volumen del
 `docker-compose.yml`. Si reconstruyes la imagen, paras y arrancas el
 contenedor, o incluso lo borras y lo vuelves a crear, esa carpeta se queda
 intacta y el bot no "olvida" nada.
+
+En esa misma carpeta está `historico_precios.csv`: una fila por cada lectura
+correcta (fecha, producto, precio final, stock, precio sin cupón y cupón).
+Puedes abrirlo con Excel o LibreOffice para ver cómo evoluciona cada precio:
+
+```bash
+tail -n 20 data/historico_precios.csv
+```
 
 ### Quitar el bot y liberar el espacio
 
@@ -312,5 +350,6 @@ docker-compose.yml                  como se arranca (volumen, variables, reinici
 .env.example                        plantilla de configuracion (copiar a .env, con tus datos)
 .github/workflows/check-price.yml   solo boton manual ahora (ver seccion de arriba)
 data/state.json                     memoria entre ejecuciones cuando corre en Docker (se crea sola)
+data/historico_precios.csv          todas las lecturas de precio (se crea sola)
 state.json                          memoria de cuando corria en GitHub Actions (historico, ya no se actualiza)
 ```
