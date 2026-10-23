@@ -1,4 +1,4 @@
-# Vigilante de precio — Sihoo Doro C300
+# Vigilante de precio — Sihoo B100
 
 Mismo tipo de bot que [yepoda-price-bot](https://github.com/balbibots/yepoda-price-bot),
 pero generalizado para vigilar **varios productos de fuentes distintas** a la
@@ -6,8 +6,12 @@ vez. De momento vigila dos:
 
 | Producto | Fuente | Último precio confirmado | Aviso si baja de |
 |---|---|---|---|
-| Sihoo Doro C300, blanca | [Tienda oficial](https://eu.sihoo.com/es/products/sihoo-doro-c300-ergonomischer-stuhl) | 299,99 € (2026-09-30) | 299,99 € |
-| Sihoo Doro C300, gris | [Amazon.es](https://www.amazon.es/SIHOO-Doro-C300-ergon%C3%B3mica-reposabrazos/dp/B0C3TNC785) | 336,99 € (2026-09-30 — ¡ya por debajo del umbral!) | 379,99 € |
+| Sihoo B100, blanca | [Tienda oficial](https://eu.sihoo.com/es/products/sihoo-b100-ergonomic-office-chair-with-flip-up-armrest) | 199,99 € (2026-10-23) | 199,99 € |
+| Sihoo B100, blanca | [Amazon.es](https://www.amazon.es/SIHOO-B100-Oficina-Soporte-Adaptable/dp/B0G5WQ65P2) | 169,99 € (2026-10-23) | 169,99 € |
+
+> Hasta el 2026-10-23 el bot vigilaba por error el modelo Doro C300; se cambió
+> al B100, que es el que se quería. Las lecciones de abajo se aprendieron con
+> el C300 pero valen igual.
 
 El umbral de cada uno está puesto **al precio de hoy**: te avisará en cuanto
 baje aunque sea un céntimo. Súbelo en `check_price.py` (variable `PRODUCTOS`)
@@ -112,9 +116,9 @@ lee Amazon (`Amazon: leyendo con navegador real (Chromium)`).
 
 ## Cómo lee cada precio
 
-**Sihoo**: `https://eu.sihoo.com/.../sihoo-doro-c300-ergonomischer-stuhl.js`
+**Sihoo**: `https://eu.sihoo.com/.../sihoo-b100-ergonomic-office-chair-with-flip-up-armrest.js`
 → JSON con un array `variants`, cada uno con su `id`, `price` (en céntimos) y
-`available`. El bot busca la variante `44187879375062` (blanca, estándar) —
+`available`. El bot busca la variante `48150078357718` (blanco, estándar) —
 si algún día quieres vigilar el negro o la versión con reposapiés en vez de
 o además de la blanca, hay que cambiar/añadir ese `variant_id` (dímelo y lo
 saco de la misma URL `.js`).
@@ -245,8 +249,8 @@ Deberías ver algo como:
 Bot arrancado en modo bucle. Comprobando cada 6.0 horas.
 
 [2026-09-30T...] Nueva comprobacion...
-[Sihoo Doro C300 (tienda oficial, blanca)] 299.99 EUR | disponible: True | umbral: 299.99 EUR
-[Sihoo Doro C300 (Amazon.es, gris)] 336.99 EUR | disponible: True | umbral: 379.99 EUR
+[Sihoo B100 (tienda oficial, blanca)] 199.99 EUR | disponible: True | umbral: 199.99 EUR
+[Sihoo B100 (Amazon.es, blanca)] 169.99 EUR | disponible: True | umbral: 169.99 EUR
 ```
 
 `Ctrl+C` sale de los logs sin parar el contenedor (sigue corriendo detrás).

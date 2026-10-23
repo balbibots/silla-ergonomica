@@ -76,25 +76,25 @@ UA_BOT = "silla-sihoo-bot/1.0 (+https://github.com/balbibots/silla-ergonomica)"
 # --------------------------------------------------------------------------
 # Los productos a vigilar. Anadir uno nuevo = anadir una entrada aqui.
 # "umbral_eur": te avisa la primera vez que el precio baje de ese numero.
-# Por defecto lo he puesto al precio de hoy (2026-09-27), para que te avise
+# Por defecto lo he puesto al precio de hoy (2026-10-23), para que te avise
 # en cuanto baje AUNQUE SEA UN CENTIMO de lo que cuesta ahora mismo. Sube el
 # numero si solo quieres que te avise a partir de una rebaja mas grande.
 # --------------------------------------------------------------------------
 PRODUCTOS = [
     {
-        "id": "silla_sihoo_oficial",
-        "nombre": "Sihoo Doro C300 (tienda oficial, blanca)",
+        "id": "silla_b100_oficial",
+        "nombre": "Sihoo B100 (tienda oficial, blanca)",
         "tipo": "shopify",
-        "url": "https://eu.sihoo.com/es/products/sihoo-doro-c300-ergonomischer-stuhl",
-        "variant_id": "44187879375062",  # White / Estandar
-        "umbral_eur": 299.99,
+        "url": "https://eu.sihoo.com/es/products/sihoo-b100-ergonomic-office-chair-with-flip-up-armrest",
+        "variant_id": "48150078357718",  # Blanco / Standard
+        "umbral_eur": 199.99,
     },
     {
-        "id": "silla_sihoo_amazon",
-        "nombre": "Sihoo Doro C300 (Amazon.es, gris)",
+        "id": "silla_b100_amazon",
+        "nombre": "Sihoo B100 (Amazon.es, blanca)",
         "tipo": "amazon",
-        "url": "https://www.amazon.es/SIHOO-Doro-C300-ergon%C3%B3mica-reposabrazos/dp/B0C3TNC785",
-        "umbral_eur": 379.99,
+        "url": "https://www.amazon.es/SIHOO-B100-Oficina-Soporte-Adaptable/dp/B0G5WQ65P2",
+        "umbral_eur": 169.99,
     },
 ]
 
