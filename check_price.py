@@ -26,13 +26,12 @@ Variables de entorno:
 """
 from __future__ import annotations
 
+import contextlib
 import csv
 import importlib.util
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 import time
 import urllib.error
@@ -67,6 +66,10 @@ MAX_ESPERA_RETRY_AFTER_SEG = float(os.environ.get("MAX_ESPERA_RETRY_AFTER_SEG", 
 # Cuanto esperar antes de reintentar tras un CAPTCHA de Amazon. Reintentar a los
 # 5s (lo normal) es lo peor: una segunda peticion inmediata es lo que lo dispara.
 ESPERA_CAPTCHA_SEG = float(os.environ.get("ESPERA_CAPTCHA_SEG", "60"))
+
+# Como leer Sihoo (Shopify): "auto" (navegador si hay Playwright), "navegador"
+# o "http". Ver fetch_shopify_navegador para el por que.
+SHOPIFY_MODO = os.environ.get("SHOPIFY_MODO", "auto").lower()
 
 # Como leer Amazon: "auto" (navegador si hay Playwright), "navegador" o "http".
 AMAZON_MODO = os.environ.get("AMAZON_MODO", "auto").lower()
@@ -207,40 +210,8 @@ def _descargar(url: str, headers: dict, timeout: float = 30) -> bytes:
         raise ErrorHTTP(exc.code, exc.headers.get("Retry-After"), cuerpo) from None
 
 
-def _descargar_curl(url: str, headers: dict, timeout: float = 30) -> bytes:
-    """Lo mismo que _descargar, pero con el programa curl. Aprendido a la mala
-    (2026-10-24): Sihoo respondia 429 "too many requests" a TODAS las
-    peticiones del cliente HTTP de Python (urllib), incluso horas despues y con
-    cualquier combinacion de cabeceras, mientras que curl con el MISMO
-    User-Agent daba 200 desde la misma IP. No es por cuantas peticiones
-    hacemos (una cada 6 h), sino por el tipo de cliente."""
-    cmd = ["curl", "-sS", "-L", "--max-time", str(int(timeout)),
-           "-w", "\n%{http_code}\n%header{retry-after}"]
-    for clave, valor in headers.items():
-        cmd += ["-H", "%s: %s" % (clave, valor)]
-    cmd.append(url)
-    res = subprocess.run(cmd, capture_output=True, timeout=timeout + 15)
-    if res.returncode != 0:
-        raise RuntimeError("curl fallo (codigo %d): %s"
-                           % (res.returncode, res.stderr.decode("utf-8", "replace").strip()[:150]))
-    cuerpo, estado, retry_after = res.stdout.rsplit(b"\n", 2)
-    estado = int(estado)
-    if estado >= 400:
-        texto = " ".join(cuerpo[:300].decode("utf-8", errors="replace").split())
-        raise ErrorHTTP(estado, retry_after.decode().strip() or None, texto)
-    return cuerpo
-
-
-def fetch_shopify(producto: dict) -> tuple[float, bool, str]:
-    """Endpoint JSON nativo de Shopify (igual que el bot de Yepoda).
-    Robusto: no depende de la maquetacion de la pagina. Se identifica con
-    UA_BOT, NO con un UA de navegador (ver el comentario de UA_BOT). Se pide
-    con curl si esta instalado (ver _descargar_curl); si no, con urllib."""
-    url = producto["url"].rstrip("/") + ".js"
-    descargar = _descargar_curl if shutil.which("curl") else _descargar
-    cuerpo = descargar(url, {"User-Agent": UA_BOT, "Accept": "application/json"})
-    data = json.loads(cuerpo.decode("utf-8"))
-
+def _parsear_shopify(data: dict, producto: dict) -> tuple[float, bool, str]:
+    """Saca precio y stock de NUESTRA variante del JSON de producto de Shopify."""
     variantes = {str(v["id"]): v for v in data.get("variants", [])}
     variante = variantes.get(str(producto["variant_id"]))
     if variante is None:
@@ -254,6 +225,95 @@ def fetch_shopify(producto: dict) -> tuple[float, bool, str]:
         raise RuntimeError("Precio sospechoso (%s). Mejor revisarlo a mano." % precio)
 
     return precio, bool(variante.get("available", False)), data.get("title", producto["nombre"])
+
+
+def fetch_shopify_http(producto: dict) -> tuple[float, bool, str]:
+    """Endpoint JSON nativo de Shopify (igual que el bot de Yepoda), pedido
+    directamente con urllib e identificandose con UA_BOT."""
+    url = producto["url"].rstrip("/") + ".js"
+    cuerpo = _descargar(url, {"User-Agent": UA_BOT, "Accept": "application/json"})
+    return _parsear_shopify(json.loads(cuerpo.decode("utf-8")), producto)
+
+
+# El JSON de producto se pide DESDE la propia pagina, con el fetch() del
+# navegador: es la misma peticion que hace el JavaScript de la tienda.
+_JS_PEDIR_JSON = """async (url) => {
+    const r = await fetch(url, {headers: {"Accept": "application/json"}});
+    return {status: r.status, retry: r.headers.get("retry-after"), texto: await r.text()};
+}"""
+
+
+def fetch_shopify_navegador(producto: dict) -> tuple[float, bool, str]:
+    """Abre la pagina normal del producto con el navegador real, como una
+    persona, y lee el precio del JSON de producto de la tienda.
+
+    Por que (2026-10-25): pidiendo el JSON directamente, Sihoo respondia 429
+    "too many requests" de forma intermitente (una peticion cada 6 h, desde
+    la misma IP unas veces si y otras no, con urllib y con curl), sin causa
+    clara. En vez de ir probando clientes hasta dar con uno que no limite, se
+    lee como lo leeria cualquier visitante: con un navegador."""
+    url_variante = "%s?variant=%s" % (producto["url"].rstrip("/"), producto["variant_id"])
+    with _pagina_navegador() as pagina:
+        resp = pagina.goto(url_variante, wait_until="domcontentloaded", timeout=45000)
+        if resp is not None and resp.status >= 400:
+            raise ErrorHTTP(resp.status, resp.headers.get("retry-after"), "pagina del producto")
+        r = pagina.evaluate(_JS_PEDIR_JSON, producto["url"].rstrip("/") + ".js")
+    if r["status"] >= 400:
+        raise ErrorHTTP(r["status"], r["retry"], " ".join(r["texto"][:300].split()))
+    return _parsear_shopify(json.loads(r["texto"]), producto)
+
+
+def _modo(variable: str) -> str:
+    """"auto" -> "navegador" si Playwright esta instalado, si no "http"."""
+    if variable == "auto":
+        return "navegador" if importlib.util.find_spec("playwright") else "http"
+    return variable
+
+
+def fetch_shopify(producto: dict) -> tuple[float, bool, str]:
+    modo = _modo(SHOPIFY_MODO)
+    print("  Sihoo: leyendo con %s" % ("navegador real (Chromium)" if modo == "navegador" else "peticion HTTP"))
+    if modo == "navegador":
+        return fetch_shopify_navegador(producto)
+    return fetch_shopify_http(producto)
+
+
+# --------------------------------------------------------------------------
+# Navegador real (Playwright), comun a Sihoo y Amazon
+# --------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def _pagina_navegador():
+    """Chromium nuevo y sin cookies, con una pagina lista para usar; se
+    cierra siempre al salir."""
+    from playwright.sync_api import sync_playwright  # import perezoso: solo si hace falta
+
+    with sync_playwright() as p:
+        ruta = os.environ.get("CHROMIUM_PATH")
+        if ruta:
+            navegador = p.chromium.launch(executable_path=ruta, headless=True,
+                                          args=AMAZON_ARGS_NAVEGADOR)
+        else:
+            try:
+                # "chromium" = Chromium completo en el nuevo modo headless, mas
+                # parecido a un navegador normal que el headless-shell por defecto.
+                navegador = p.chromium.launch(channel="chromium", headless=True,
+                                              args=AMAZON_ARGS_NAVEGADOR)
+            except Exception:  # noqa: BLE001
+                navegador = p.chromium.launch(headless=True, args=AMAZON_ARGS_NAVEGADOR)
+        try:
+            # El UA por defecto de un navegador headless dice "HeadlessChrome":
+            # se lo quitamos (sin inventar nada: es el mismo Chromium).
+            pagina_vacia = navegador.new_page()
+            ua = pagina_vacia.evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
+            pagina_vacia.close()
+
+            yield navegador.new_context(
+                user_agent=ua, locale="es-ES", timezone_id="Europe/Madrid",
+                viewport={"width": 1366, "height": 768},
+            ).new_page()
+        finally:
+            navegador.close()
 
 
 # --------------------------------------------------------------------------
@@ -386,50 +446,23 @@ def fetch_amazon_http(producto: dict) -> tuple:
 def fetch_amazon_navegador(producto: dict) -> tuple:
     """Carga la ficha con un Chromium real (Playwright), nuevo y sin cookies en
     cada comprobacion, y lee el precio del HTML ya renderizado."""
-    from playwright.sync_api import sync_playwright  # import perezoso: solo si hace falta
+    with _pagina_navegador() as pagina:
+        pagina.goto(producto["url"], wait_until="domcontentloaded", timeout=45000)
 
-    with sync_playwright() as p:
-        ruta = os.environ.get("CHROMIUM_PATH")
-        if ruta:
-            navegador = p.chromium.launch(executable_path=ruta, headless=True,
-                                          args=AMAZON_ARGS_NAVEGADOR)
-        else:
+        # La ficha se acaba de pintar con JavaScript: miramos el HTML varias
+        # veces hasta que aparezca el precio o se vea que es un CAPTCHA.
+        limite = time.monotonic() + AMAZON_ESPERA_PAGINA_SEG
+        html = ""
+        while True:
             try:
-                # "chromium" = Chromium completo en el nuevo modo headless, mas
-                # parecido a un navegador normal que el headless-shell por defecto.
-                navegador = p.chromium.launch(channel="chromium", headless=True,
-                                              args=AMAZON_ARGS_NAVEGADOR)
-            except Exception:  # noqa: BLE001
-                navegador = p.chromium.launch(headless=True, args=AMAZON_ARGS_NAVEGADOR)
-        try:
-            # El UA por defecto de un navegador headless dice "HeadlessChrome":
-            # se lo quitamos (sin inventar nada: es el mismo Chromium).
-            pagina_vacia = navegador.new_page()
-            ua = pagina_vacia.evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
-            pagina_vacia.close()
-
-            pagina = navegador.new_context(
-                user_agent=ua, locale="es-ES", timezone_id="Europe/Madrid",
-                viewport={"width": 1366, "height": 768},
-            ).new_page()
-            pagina.goto(producto["url"], wait_until="domcontentloaded", timeout=45000)
-
-            # La ficha se acaba de pintar con JavaScript: miramos el HTML varias
-            # veces hasta que aparezca el precio o se vea que es un CAPTCHA.
-            limite = time.monotonic() + AMAZON_ESPERA_PAGINA_SEG
-            html = ""
-            while True:
-                try:
-                    html = pagina.content()
-                except Exception:  # noqa: BLE001 - navegacion en curso
-                    html = ""
-                if _extraer_precio_amazon(html) is not None or _es_captcha_amazon(html):
-                    break
-                if time.monotonic() >= limite:
-                    break
-                pagina.wait_for_timeout(1000)
-        finally:
-            navegador.close()
+                html = pagina.content()
+            except Exception:  # noqa: BLE001 - navegacion en curso
+                html = ""
+            if _extraer_precio_amazon(html) is not None or _es_captcha_amazon(html):
+                break
+            if time.monotonic() >= limite:
+                break
+            pagina.wait_for_timeout(1000)
 
     return _resultado_amazon(html, producto)
 
@@ -442,9 +475,7 @@ def fetch_amazon(producto: dict) -> tuple:
     Shopify): sin precio puede ser agotado, CAPTCHA o cambio de la pagina. Se
     trata siempre como un error, nunca como "agotado".
     """
-    modo = AMAZON_MODO
-    if modo == "auto":
-        modo = "navegador" if importlib.util.find_spec("playwright") else "http"
+    modo = _modo(AMAZON_MODO)
     print("  Amazon: leyendo con %s" % ("navegador real (Chromium)" if modo == "navegador" else "peticion HTTP"))
     if modo == "navegador":
         return fetch_amazon_navegador(producto)

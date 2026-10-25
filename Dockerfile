@@ -18,13 +18,6 @@ WORKDIR /app
 RUN pip install --no-cache-dir playwright==1.63.0 \
     && python3 -c "from importlib.metadata import version; import playwright.sync_api; print('Playwright', version('playwright'), 'importable')"
 
-# Sihoo se lee con curl (ver _descargar_curl en check_price.py: responde 429 al
-# cliente HTTP de Python pero no a curl). Se instala por si la imagen no lo trae.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl --version | head -n 1
-
 # El resto del bot solo usa la libreria estandar.
 COPY check_price.py loop_runner.py ./
 
@@ -36,6 +29,9 @@ ENV PYTHONUNBUFFERED=1
 # CAPTCHA casi siempre) y el fallo pasaria desapercibido; fijandolo aqui, un
 # Playwright roto da un error claro en el aviso de Telegram.
 ENV AMAZON_MODO=navegador
+# Sihoo tambien (2026-10-25): pidiendo su JSON directamente daba 429
+# intermitentes; con el navegador se lee como cualquier visitante.
+ENV SHOPIFY_MODO=navegador
 
 # Nota: se ejecuta como root dentro del contenedor (simplificacion a
 # proposito). Playwright ya lanza Chromium sin su sandbox interno por defecto,

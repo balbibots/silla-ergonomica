@@ -73,18 +73,26 @@ identifica con un User-Agent propio y honesto
 Amazon sí sigue usando el UA de navegador, porque lo necesita para servir la
 página normal.
 
-### Segunda parte: Sihoo y el cliente HTTP de Python (2026-10-24)
+### Segunda parte: Sihoo vuelve al 429 y pasa al navegador (2026-10-24/25)
 
-Con el cambio a la B100, Sihoo volvió a responder `429 too many requests` en
-cada comprobación. Esta vez no era el User-Agent: desde la misma IP, el cliente
-HTTP de Python (`urllib`) recibía 429 siempre (horas después y con cualquier
-combinación de cabeceras), mientras que `curl` con **el mismo** User-Agent
-honesto recibía 200. El límite depende del tipo de cliente, no de cuántas
-peticiones hacemos (una cada 6 h).
+Con el cambio a la B100, Sihoo volvió a responder `429 too many requests`
+pidiendo su JSON directamente, una vez cada 6 h. El patrón no tenía una causa
+clara:
 
-Por eso Sihoo se lee ahora con `curl` (instalado en la imagen de Docker),
-manteniendo el UA propio `silla-sihoo-bot`. Si `curl` no estuviera, el bot
-vuelve a `urllib`.
+| Desde (misma IP pública) | Cliente | Resultado |
+|---|---|---|
+| PC | `curl` | 200 |
+| PC | Python (`urllib`) | 429 siempre |
+| Raspberry | Python | 7 ciclos bien, luego 429 |
+| Raspberry | `curl` | 429 |
+
+Un primer intento fue cambiar a `curl` (porque en el PC funcionaba), y en la
+Raspberry falló igual. En vez de seguir probando clientes hasta dar con uno que
+la tienda no limitase, **Sihoo se lee ahora igual que Amazon: con el navegador
+real**. Abre la página normal del producto, como cualquier visitante, y desde
+ella pide el JSON de producto, como hace el propio JavaScript de la tienda. En
+el PC donde Python daba 429 siempre, así leyó 4 de 4. `SHOPIFY_MODO=http`
+vuelve a la petición directa (útil para depurar).
 
 ### Lección aprendida: Amazon y el CAPTCHA (2026-10-08)
 
@@ -130,7 +138,9 @@ lee Amazon (`Amazon: leyendo con navegador real (Chromium)`).
 
 ## Cómo lee cada precio
 
-**Sihoo**: `https://eu.sihoo.com/.../sihoo-b100-ergonomic-office-chair-with-flip-up-armrest.js`
+**Sihoo**: el navegador real abre la ficha
+(`https://eu.sihoo.com/es/products/sihoo-b100-...?variant=48150078357718`) y,
+desde ella, pide `https://eu.sihoo.com/.../sihoo-b100-ergonomic-office-chair-with-flip-up-armrest.js`
 → JSON con un array `variants`, cada uno con su `id`, `price` (en céntimos) y
 `available`. El bot busca la variante `48150078357718` (blanco, estándar) —
 si algún día quieres vigilar el negro o la versión con reposapiés en vez de
