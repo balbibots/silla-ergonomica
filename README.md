@@ -1,14 +1,15 @@
-# Vigilante de precio — sillas ergonómicas
+# Vigilante de precios
 
 Mismo tipo de bot que [yepoda-price-bot](https://github.com/balbibots/yepoda-price-bot),
 pero generalizado para vigilar **varios productos de fuentes distintas** a la
-vez. De momento vigila tres:
+vez, agrupados por categorías. De momento vigila cuatro:
 
-| Producto | Fuente | Último precio confirmado | Aviso si baja de |
-|---|---|---|---|
-| Sihoo B100, blanca | [Tienda oficial](https://eu.sihoo.com/es/products/sihoo-b100-ergonomic-office-chair-with-flip-up-armrest) | 199,99 € (2026-10-23) | 199,99 € |
-| Sihoo B100, blanca | [Amazon.es](https://www.amazon.es/SIHOO-B100-Oficina-Soporte-Adaptable/dp/B0G5WQ65P2) | 169,99 € (2026-10-23) | 169,99 € |
-| Flexispot ErgoX Lite, beige | [Amazon.es](https://www.amazon.es/dp/B0H3ZVDKYV) | 230,49 € con cupón de 45 € (275,49 € sin cupón, 2026-10-24) | 230,49 € |
+| Categoría | Producto | Fuente | Último precio confirmado | Aviso si baja de |
+|---|---|---|---|---|
+| 🪑 Sillas | Sihoo B100, blanca | [Tienda oficial](https://eu.sihoo.com/es/products/sihoo-b100-ergonomic-office-chair-with-flip-up-armrest) | 199,99 € (2026-10-23) | 199,99 € |
+| 🪑 Sillas | Sihoo B100, blanca | [Amazon.es](https://www.amazon.es/SIHOO-B100-Oficina-Soporte-Adaptable/dp/B0G5WQ65P2) | 169,99 € (2026-10-23) | 169,99 € |
+| 🪑 Sillas | Flexispot ErgoX Lite, beige | [Amazon.es](https://www.amazon.es/dp/B0H3ZVDKYV) | 230,49 € con cupón de 45 € (275,49 € sin cupón, 2026-10-24) | 230,49 € |
+| 🧹 Aspiradoras | Xiaomi G20 | [Amazon.es](https://www.amazon.es/dp/B0DJ82JKFL) | 125,00 € (2026-10-25; precio de referencia 199,99 €) | 125,00 € |
 
 > Hasta el 2026-10-23 el bot vigilaba por error el modelo Doro C300; se cambió
 > al B100, que es el que se quería. Las lecciones de abajo se aprendieron con
@@ -186,6 +187,44 @@ Además, en Amazon:
   (`FALLOS_ANTES_DE_AVISAR`). Un CAPTCHA o un 429 sueltos se arreglan solos en
   el ciclo siguiente y no te llegan; si el problema persiste (~12-18 h), sí.
 
+## Cómo son los mensajes
+
+En cada comprobación llega **un solo mensaje** con todas las novedades,
+agrupadas por categoría y con un bloque por producto (si no hay novedades, no
+llega nada):
+
+```
+🔔 2 novedades
+
+🪑 SILLAS
+━━━━━━━━━━━━━━━
+
+🔥 Sihoo B100 blanca · Amazon
+¡Por debajo de tu aviso de 169,99 €!
+💰 199,99 € → 159,99 €  (−40,00 €)
+Ver producto
+
+🧹 ASPIRADORAS
+━━━━━━━━━━━━━━━
+
+📉 Xiaomi G20 · Amazon
+Ha bajado de precio
+💰 125,00 € → 119,00 €  (−6,00 €)
+🎯 Aviso de chollo: por debajo de 115,00 €
+🎟️ Incluye cupón de 10,00 € (sin cupón: 129,00 €). Márcalo en la ficha al comprar.
+Ver producto
+```
+
+Los emojis de cabecera dicen qué ha pasado de un vistazo: 🔥 por debajo de tu
+aviso, 📉/📈 bajada/subida, ↗️ vuelve a subir por encima del aviso, 🟢/🛑 vuelve
+el stock / se agota (solo tienda oficial), ⚠️ no se ha podido leer. El
+resumen semanal ("📡 Sigo vigilando") usa la misma disposición. Si algún día
+hay tantos productos que no cabe en un mensaje de Telegram, se parte por
+categorías.
+
+Si el envío a Telegram falla, no se marca nada como avisado: el aviso se
+repite en la siguiente comprobación.
+
 ## Qué te avisa (y qué no)
 
 | Evento | ¿Avisa? |
@@ -212,17 +251,21 @@ producto, aquí basta con añadir una entrada a la lista `PRODUCTOS` en
 
 ```python
 {
-    "id": "algo_unico",
-    "nombre": "Nombre para los mensajes",
-    "tipo": "shopify",  # o "amazon"
-    "url": "https://...",
-    "variant_id": "...",  # solo si tipo == "shopify"
-    "umbral_eur": 123.45,
+    "id": "algo_unico",          # su memoria: no lo cambies después
+    "categoria": "Aspiradoras",  # agrupa el producto en los mensajes
+    "nombre": "Xiaomi G20",      # como aparece en los mensajes
+    "tienda": "Amazon",
+    "tipo": "amazon",            # o "shopify"
+    "url": "https://www.amazon.es/dp/B0DJ82JKFL",
+    "variant_id": "...",         # solo si tipo == "shopify"
+    "umbral_eur": 125.00,
 },
 ```
 
-Todo lo demás (estado, avisos, heartbeat combinado) funciona automáticamente
-para el producto nuevo sin tocar nada más.
+Todo lo demás (estado, avisos, historial, resumen semanal) funciona solo para
+el producto nuevo. Una **categoría nueva** también: aparece en su propio
+grupo, en el orden en que esté en `PRODUCTOS`. Para darle emoji, añádelo a
+`EMOJI_CATEGORIA` en `check_price.py` (si no, sale con 📦).
 
 ## Cómo probarlo en tu ordenador
 
@@ -296,11 +339,17 @@ Deberías ver algo como:
 ```
 Bot arrancado en modo bucle. Comprobando cada 6.0 horas.
 
-[2026-09-30T...] Nueva comprobacion...
-[Sihoo B100 (tienda oficial, blanca)] 199.99 EUR | disponible: True | umbral: 199.99 EUR
-[Sihoo B100 (Amazon.es, blanca)] 169.99 EUR | disponible: True | umbral: 169.99 EUR
+[2026-10-25T...] Nueva comprobacion...
+  Sihoo: leyendo con navegador real (Chromium)
+[Sihoo B100 blanca · Sihoo (tienda oficial)] 199.99 EUR | disponible: True | umbral: 199.99 EUR
+  Amazon: leyendo con navegador real (Chromium)
+[Sihoo B100 blanca · Amazon] 199.99 EUR | disponible: True | umbral: 169.99 EUR
   pausa de 60s antes de la siguiente ficha de Amazon...
-[Flexispot ErgoX Lite (Amazon.es, beige)] 230.49 EUR (275.49 sin cupon, cupon 45.00 €) | disponible: True | umbral: 230.49 EUR
+  Amazon: leyendo con navegador real (Chromium)
+[Flexispot ErgoX Lite beige · Amazon] 230.49 EUR (275.49 sin cupon, cupon 45,00 €) | disponible: True | umbral: 230.49 EUR
+  pausa de 60s antes de la siguiente ficha de Amazon...
+  Amazon: leyendo con navegador real (Chromium)
+[Xiaomi G20 · Amazon] 125.00 EUR | disponible: True | umbral: 125.00 EUR
 ```
 
 En los ciclos en los que a Amazon aún no le toca (cada 12 h), verás

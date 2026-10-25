@@ -27,7 +27,9 @@ Variables de entorno:
 from __future__ import annotations
 
 import contextlib
+import copy
 import csv
+import html
 import importlib.util
 import json
 import os
@@ -100,17 +102,24 @@ UA_BOT = "silla-sihoo-bot/1.0 (+https://github.com/balbibots/silla-ergonomica)"
 
 # --------------------------------------------------------------------------
 # Los productos a vigilar. Anadir uno nuevo = anadir una entrada aqui.
+# "categoria": agrupa los productos en el mensaje de Telegram (Sillas,
+#   Aspiradoras...). Una categoria nueva funciona sola; si quieres darle un
+#   emoji, anadelo en EMOJI_CATEGORIA (si no, sale con 📦).
+# "nombre" + "tienda": como aparece en los mensajes ("Sihoo B100 blanca" en
+#   "Amazon"). El "id" es la memoria del producto: NO lo cambies.
 # "umbral_eur": te avisa la primera vez que el precio baje de ese numero.
-# En Amazon el precio vigilado es el FINAL: si la ficha tiene un cupon
-# ("Aplicar cupon de 45 EUR"), ya va descontado.
-# Por defecto lo he puesto al precio de hoy (2026-10-23), para que te avise
-# en cuanto baje AUNQUE SEA UN CENTIMO de lo que cuesta ahora mismo. Sube el
-# numero si solo quieres que te avise a partir de una rebaja mas grande.
+#   En Amazon el precio vigilado es el FINAL: si la ficha tiene un cupon
+#   ("Aplicar cupon de 45 EUR"), ya va descontado.
+# Por defecto el umbral es el precio del dia en que se anadio el producto,
+# para que te avise en cuanto baje AUNQUE SEA UN CENTIMO. Sube el numero si
+# solo quieres que te avise a partir de una rebaja mas grande.
 # --------------------------------------------------------------------------
 PRODUCTOS = [
     {
         "id": "silla_b100_oficial",
-        "nombre": "Sihoo B100 (tienda oficial, blanca)",
+        "categoria": "Sillas",
+        "nombre": "Sihoo B100 blanca",
+        "tienda": "Sihoo (tienda oficial)",
         "tipo": "shopify",
         "url": "https://eu.sihoo.com/es/products/sihoo-b100-ergonomic-office-chair-with-flip-up-armrest",
         "variant_id": "48150078357718",  # Blanco / Standard
@@ -118,18 +127,31 @@ PRODUCTOS = [
     },
     {
         "id": "silla_b100_amazon",
-        "nombre": "Sihoo B100 (Amazon.es, blanca)",
+        "categoria": "Sillas",
+        "nombre": "Sihoo B100 blanca",
+        "tienda": "Amazon",
         "tipo": "amazon",
         "url": "https://www.amazon.es/SIHOO-B100-Oficina-Soporte-Adaptable/dp/B0G5WQ65P2",
         "umbral_eur": 169.99,
     },
     {
         "id": "silla_flexispot_ergox_lite_amazon",
-        "nombre": "Flexispot ErgoX Lite (Amazon.es, beige)",
+        "categoria": "Sillas",
+        "nombre": "Flexispot ErgoX Lite beige",
+        "tienda": "Amazon",
         "tipo": "amazon",
         "url": "https://www.amazon.es/dp/B0H3ZVDKYV",
         # 2026-10-24: 275,49 EUR con un cupon de 45 EUR -> 230,49 EUR.
         "umbral_eur": 230.49,
+    },
+    {
+        "id": "aspiradora_xiaomi_g20_amazon",
+        "categoria": "Aspiradoras",
+        "nombre": "Xiaomi G20",
+        "tienda": "Amazon",
+        "tipo": "amazon",
+        "url": "https://www.amazon.es/dp/B0DJ82JKFL",
+        "umbral_eur": 125.00,  # 2026-10-25 (precio de referencia: 199,99)
     },
 ]
 
@@ -165,7 +187,8 @@ def send_telegram(text: str) -> None:
         )
 
     payload = urllib.parse.urlencode(
-        {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+         "disable_web_page_preview": "true"}
     ).encode()
     req = urllib.request.Request(
         "https://api.telegram.org/bot%s/sendMessage" % token, data=payload
@@ -384,7 +407,7 @@ def _cupon_amazon(html: str, precio: float) -> tuple[float, str | None]:
     if m.group(2) == "%":
         final, texto = precio * (1 - valor / 100.0), "%g %%" % valor
     else:
-        final, texto = precio - valor, "%.2f €" % valor
+        final, texto = precio - valor, _eur(valor)
     if final <= 0 or final >= precio:
         return precio, None  # algo raro: mejor ignorar el cupon que inventar
     return round(final, 2), texto
@@ -487,41 +510,103 @@ FETCHERS = {"shopify": fetch_shopify, "amazon": fetch_amazon}
 
 # --------------------------------------------------------------------------
 
-def handle_error(estado_producto: dict, nombre: str, mensaje: str) -> bool:
-    """Avisa de que un producto concreto ha fallado, pero solo si lleva
+# --------------------------------------------------------------------------
+# Mensajes de Telegram
+#
+# En cada comprobacion se manda UN SOLO mensaje con todas las novedades,
+# agrupadas por categoria y con un bloque por producto. Asi, con muchos
+# productos, se sigue leyendo de un vistazo.
+# --------------------------------------------------------------------------
+
+EMOJI_CATEGORIA = {"Sillas": "🪑", "Aspiradoras": "🧹"}
+SEPARADOR = "━━━━━━━━━━━━━━━"
+MAX_LARGO_MENSAJE = 3800  # Telegram corta en 4096
+
+
+def _h(texto) -> str:
+    """Escapa texto para el HTML de Telegram (un error con '<' lo romperia)."""
+    return html.escape(str(texto), quote=False)
+
+
+def _eur(valor: float) -> str:
+    """1299.5 -> '1.299,50 €' (formato espanol)."""
+    return ("{:,.2f}".format(valor).replace(",", "X").replace(".", ",").replace("X", ".")) + " €"
+
+
+def _etiqueta(producto: dict) -> str:
+    """Para logs e historico: 'Sihoo B100 blanca · Amazon'."""
+    return "%s · %s" % (producto["nombre"], producto.get("tienda", producto["tipo"]))
+
+
+def _bloque(producto: dict, emoji: str, lineas: list[str], disponible: bool | None = None) -> str:
+    """Un producto: cabecera, lineas de detalle y pie con stock y enlace."""
+    cabecera = "%s <b>%s</b> · %s" % (emoji, _h(producto["nombre"]), _h(producto.get("tienda", "")))
+    pie = '<a href="%s">Ver producto</a>' % html.escape(producto["url"], quote=True)
+    if disponible is not None and producto["tipo"] == "shopify":  # Amazon no lo detecta fiable
+        pie = ("✅ Disponible" if disponible else "❌ Agotado") + "  ·  " + pie
+    return "\n".join([cabecera] + lineas + [pie])
+
+
+def _categorias(bloques: list[tuple[dict, str]]) -> list[str]:
+    """Agrupa los bloques por categoria (en el orden de PRODUCTOS) y devuelve
+    una seccion de texto por categoria."""
+    orden = []
+    for p in PRODUCTOS:
+        cat = p.get("categoria", "Otros")
+        if cat not in orden:
+            orden.append(cat)
+    secciones = []
+    for cat in orden + sorted({p.get("categoria", "Otros") for p, _ in bloques} - set(orden)):
+        suyos = [b for p, b in bloques if p.get("categoria", "Otros") == cat]
+        if suyos:
+            titulo = "%s <b>%s</b>\n%s" % (EMOJI_CATEGORIA.get(cat, "📦"), _h(cat.upper()), SEPARADOR)
+            secciones.append(titulo + "\n\n" + "\n\n".join(suyos))
+    return secciones
+
+
+def componer_mensajes(titulo: str, bloques: list[tuple[dict, str]]) -> list[str]:
+    """Titulo + secciones por categoria. Si no cabe en un mensaje de Telegram,
+    se parte por categorias (cada trozo repite el titulo)."""
+    secciones = _categorias(bloques)
+    mensajes, actual = [], titulo
+    for sec in secciones:
+        candidato = actual + "\n\n\n" + sec
+        if len(candidato) > MAX_LARGO_MENSAJE and actual != titulo:
+            mensajes.append(actual)
+            candidato = titulo + "\n\n\n" + sec
+        actual = candidato
+    mensajes.append(actual)
+    return mensajes
+
+
+def handle_error(estado_producto: dict, producto: dict, mensaje: str) -> str | None:
+    """Fallo al leer un producto. Solo genera aviso si lleva
     FALLOS_ANTES_DE_AVISAR ciclos seguidos fallando, y maximo 1 vez/24h.
-    Devuelve True si se ha mandado un aviso nuevo."""
+    Devuelve el bloque del mensaje, o None si no toca avisar."""
     fallos = estado_producto.get("consecutive_failures", 0) + 1
     estado_producto["consecutive_failures"] = fallos
-    print("ERROR (%s), fallo %d seguido: %s" % (nombre, fallos, mensaje))
+    print("ERROR (%s), fallo %d seguido: %s" % (_etiqueta(producto), fallos, mensaje))
     if fallos < FALLOS_ANTES_DE_AVISAR:
         print("  (aun no aviso: lo hare si sigue fallando %d ciclo(s) mas)"
               % (FALLOS_ANTES_DE_AVISAR - fallos))
-        return False
+        return None
 
     ahora = datetime.now(timezone.utc)
     anterior = estado_producto.get("last_error_notified_at")
-
-    debe_avisar = True
     if anterior:
         try:
-            debe_avisar = ahora - datetime.fromisoformat(anterior) > timedelta(hours=ERROR_REMINDER_HOURS)
+            if ahora - datetime.fromisoformat(anterior) <= timedelta(hours=ERROR_REMINDER_HOURS):
+                return None
         except ValueError:
-            debe_avisar = True
+            pass
 
-    if debe_avisar:
-        try:
-            send_telegram(
-                "⚠️ <b>No he podido leer el precio</b>\n\n"
-                "<b>%s</b>\nLleva %d comprobaciones seguidas fallando. Último error:\n"
-                "<code>%s</code>\n\n"
-                "No te fíes del silencio de este producto hasta que se arregle." % (nombre, fallos, mensaje)
-            )
-            estado_producto["last_error_notified_at"] = ahora.isoformat()
-            return True
-        except Exception as exc:  # noqa: BLE001
-            print("Ademas, no he podido avisar por Telegram: %s" % exc)
-    return False
+    estado_producto["last_error_notified_at"] = ahora.isoformat()
+    return _bloque(producto, "⚠️", [
+        "<b>No he podido leer el precio</b> (%d %s)"
+        % (fallos, "comprobación" if fallos == 1 else "comprobaciones seguidas"),
+        "<code>%s</code>" % _h(mensaje[:300]),
+        "<i>No te fíes de su silencio hasta que se arregle.</i>",
+    ])
 
 
 def fetch_con_reintento(fetcher, producto: dict) -> tuple:
@@ -591,100 +676,80 @@ def guardar_historico(producto: dict, precio: float, disponible: bool, detalle: 
                             "disponible", "precio_sin_cupon_eur", "cupon"])
             sin_cupon = detalle.get("precio_sin_cupon")
             w.writerow([datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                        producto["id"], producto["nombre"], "%.2f" % precio, disponible,
+                        producto["id"], _etiqueta(producto), "%.2f" % precio, disponible,
                         "%.2f" % sin_cupon if sin_cupon is not None else "",
                         detalle.get("cupon") or ""])
     except OSError as exc:
         print("  (no he podido guardar el historico: %s)" % exc)
 
 
-def procesar_producto(producto: dict, estado: dict) -> bool:
-    """Comprueba un producto y manda los avisos que correspondan.
-    Devuelve True si se ha mandado algun mensaje (para el heartbeat)."""
-    pid = producto["id"]
-    estado_producto = estado.setdefault(pid, {})
+def procesar_producto(producto: dict, estado_producto: dict) -> str | None:
+    """Comprueba un producto, actualiza su estado y devuelve el bloque del
+    mensaje de Telegram con sus novedades (None si no hay nada que contar)."""
     fetcher = FETCHERS[producto["tipo"]]
 
     try:
         precio, disponible, titulo, *extra = fetch_con_reintento(fetcher, producto)
     except Exception as exc:  # noqa: BLE001
-        return handle_error(estado_producto, producto["nombre"], "%s: %s" % (type(exc).__name__, exc))
+        return handle_error(estado_producto, producto, "%s: %s" % (type(exc).__name__, exc))
     detalle = extra[0] if extra else {}
 
     cupon_log = ""
     if detalle.get("cupon"):
         cupon_log = " (%.2f sin cupon, cupon %s)" % (detalle["precio_sin_cupon"], detalle["cupon"])
     print("[%s] %.2f EUR%s | disponible: %s | umbral: %.2f EUR"
-          % (producto["nombre"], precio, cupon_log, disponible, producto["umbral_eur"]))
+          % (_etiqueta(producto), precio, cupon_log, disponible, producto["umbral_eur"]))
     guardar_historico(producto, precio, disponible, detalle)
-
-    # Linea que explica el precio en los avisos cuando incluye un cupon.
-    nota_cupon = ""
-    if detalle.get("cupon"):
-        nota_cupon = ("\n🎟️ Con cupón de %s (sin cupón: %.2f €). Hay que marcarlo en la "
-                      "ficha antes de comprar." % (detalle["cupon"], detalle["precio_sin_cupon"]))
-    elif estado_producto.get("last_coupon"):
-        nota_cupon = "\n🎟️ El cupón de %s ya no aparece." % estado_producto["last_coupon"]
 
     anterior_precio = estado_producto.get("last_price")
     ya_avisado = estado_producto.get("below_threshold_notified", False)
     anterior_disponible = estado_producto.get("last_available")
+    anterior_cupon = estado_producto.get("last_coupon")
     estado_producto.pop("last_error_notified_at", None)
     estado_producto.pop("consecutive_failures", None)
 
-    algo_enviado = False
-    try:
-        stock = "✅ disponible" if disponible else "❌ agotado"
+    emoji, lineas = None, []
+    umbral = producto["umbral_eur"]
 
-        if producto["tipo"] == "shopify" and anterior_disponible is not None and disponible != anterior_disponible:
-            if disponible:
-                send_telegram("🟢 <b>¡Ha vuelto a haber stock!</b>\n\n<b>%s</b>\n%.2f €\n\n%s"
-                              % (producto["nombre"], precio, producto["url"]))
-            else:
-                send_telegram("🛑 <b>Se ha agotado</b>\n\n<b>%s</b>\nÚltimo precio: %.2f €\n\n%s"
-                              % (producto["nombre"], precio, producto["url"]))
-            algo_enviado = True
+    def linea_precio() -> str:
+        if anterior_precio is None or anterior_precio == precio:
+            return "💰 <b>%s</b>" % _eur(precio)
+        dif = precio - anterior_precio
+        return "💰 %s → <b>%s</b>  (%s%s)" % (_eur(anterior_precio), _eur(precio),
+                                            "+" if dif > 0 else "−", _eur(abs(dif)))
 
-        if precio < producto["umbral_eur"] and not ya_avisado:
-            diferencia = ""
-            if anterior_precio:
-                diferencia = "\nAntes: %.2f €." % anterior_precio
-            send_telegram(
-                "🔥 <b>¡%s ha bajado de %.0f €!</b>\n\n"
-                "Ahora: <b>%.2f €</b>%s%s\nStock: %s\n\n%s"
-                % (producto["nombre"], producto["umbral_eur"], precio, diferencia, nota_cupon,
-                   stock, producto["url"])
-            )
-            estado_producto["below_threshold_notified"] = True
-            algo_enviado = True
+    # Stock (solo Shopify: Amazon no lo detecta de forma fiable)
+    if producto["tipo"] == "shopify" and anterior_disponible is not None and disponible != anterior_disponible:
+        emoji = "🟢" if disponible else "🛑"
+        lineas.append("<b>¡Vuelve a haber stock!</b>" if disponible else "<b>Se ha agotado</b>")
 
-        elif precio >= producto["umbral_eur"] and ya_avisado:
-            send_telegram(
-                "↗️ <b>%s ha vuelto a subir</b>\n\nAhora: %.2f €%s\n\n"
-                "Te aviso de nuevo si baja de %.0f €."
-                % (producto["nombre"], precio, nota_cupon, producto["umbral_eur"])
-            )
-            estado_producto["below_threshold_notified"] = False
-            algo_enviado = True
+    if precio < umbral and not ya_avisado:
+        emoji = "🔥"
+        lineas.append("<b>¡Por debajo de tu aviso de %s!</b>" % _eur(umbral))
+        lineas.append(linea_precio())
+        estado_producto["below_threshold_notified"] = True
+    elif precio >= umbral and ya_avisado:
+        emoji = "↗️"
+        lineas.append("<b>Ha vuelto a subir</b> por encima de %s" % _eur(umbral))
+        lineas.append(linea_precio())
+        lineas.append("<i>Te aviso otra vez si baja de %s.</i>" % _eur(umbral))
+        estado_producto["below_threshold_notified"] = False
+    elif NOTIFY_ON_ANY_CHANGE and anterior_precio is not None and precio != anterior_precio:
+        # No ha cruzado el umbral, pero el precio SI se ha movido: seguimiento
+        # general, no solo avisos de "chollo".
+        emoji = "📉" if precio < anterior_precio else "📈"
+        lineas.append("<b>Ha %s de precio</b>" % ("bajado" if precio < anterior_precio else "subido"))
+        lineas.append(linea_precio())
+        lineas.append("🎯 Aviso de chollo: por debajo de %s" % _eur(umbral))
+    elif lineas:  # solo cambio de stock
+        lineas.append(linea_precio())
 
-        elif NOTIFY_ON_ANY_CHANGE and anterior_precio is not None and precio != anterior_precio:
-            # No ha cruzado el umbral, pero el precio SI se ha movido (para
-            # arriba o para abajo) desde la ultima vez: seguimiento general,
-            # no solo avisos de "chollo".
-            flecha = "📉" if precio < anterior_precio else "📈"
-            send_telegram(
-                "%s <b>%s ha cambiado de precio</b>\n\n%.2f € → <b>%.2f €</b>%s\nStock: %s\n\n"
-                "(Tu aviso de chollo sigue puesto en %.0f €.)\n\n%s"
-                % (flecha, producto["nombre"], anterior_precio, precio, nota_cupon, stock,
-                   producto["umbral_eur"], producto["url"])
-            )
-            algo_enviado = True
-
-    except Exception as exc:  # noqa: BLE001
-        # Si el envio falla, no marcamos nada como avisado: se reintenta
-        # entero en la siguiente ejecucion.
-        print("ERROR: no he podido enviar el aviso de %s: %s" % (producto["nombre"], exc))
-        return False
+    if lineas:
+        if detalle.get("cupon"):
+            lineas.append("🎟️ Incluye cupón de %s (sin cupón: %s). Márcalo en la ficha al comprar."
+                          % (_h(detalle["cupon"]), _eur(detalle["precio_sin_cupon"])))
+        elif anterior_cupon:
+            lineas.append("🎟️ El cupón de %s ya no aparece." % _h(anterior_cupon))
 
     estado_producto["last_price"] = precio
     if detalle.get("cupon"):
@@ -693,7 +758,7 @@ def procesar_producto(producto: dict, estado: dict) -> bool:
         estado_producto.pop("last_coupon", None)
     estado_producto["last_available"] = disponible
     estado_producto["last_checked_at"] = datetime.now(timezone.utc).isoformat()
-    return algo_enviado
+    return _bloque(producto, emoji, lineas, disponible) if lineas else None
 
 
 def comprobar_heartbeat(estado: dict, hubo_eventos: bool) -> None:
@@ -714,17 +779,18 @@ def comprobar_heartbeat(estado: dict, hubo_eventos: bool) -> None:
     if not toca or hubo_eventos:
         return  # si ya ha pasado algo real esta vez, no duplicamos con un heartbeat
 
-    lineas = ["📡 <b>Sigo vigilando</b>", ""]
+    bloques = []
     for p in PRODUCTOS:
         ep = estado.get(p["id"], {})
         precio = ep.get("last_price")
-        if precio is not None:
-            lineas.append("• %s: %.2f €" % (p["nombre"], precio))
-        else:
-            lineas.append("• %s: sin datos todavía" % p["nombre"])
+        lineas = ["💰 <b>%s</b>" % _eur(precio) if precio is not None else "<i>Sin datos todavía</i>"]
+        if ep.get("last_coupon"):
+            lineas.append("🎟️ Con cupón de %s" % _h(ep["last_coupon"]))
+        bloques.append((p, _bloque(p, "•", lineas, ep.get("last_available"))))
 
     try:
-        send_telegram("\n".join(lineas))
+        for texto in componer_mensajes("📡 <b>Sigo vigilando</b>  ·  resumen semanal", bloques):
+            send_telegram(texto)
         estado["last_heartbeat_at"] = ahora.isoformat()
     except Exception as exc:  # noqa: BLE001
         print("ERROR: no he podido enviar el heartbeat: %s" % exc)
@@ -746,23 +812,54 @@ def main() -> int:
         return 0
 
     estado = load_state()
-    hubo_eventos = False
     ahora = datetime.now(timezone.utc)
     amazon_leidos = 0
+    bloques = []      # (producto, texto) con novedades de este ciclo
+    pendientes = {}   # id -> (estado anterior, estado nuevo) de los que avisan
+
     for producto in PRODUCTOS:
-        if not toca_comprobar(producto, estado.setdefault(producto["id"], {}), ahora):
+        pid = producto["id"]
+        anterior = estado.setdefault(pid, {})
+        if not toca_comprobar(producto, anterior, ahora):
             print("[%s] leido hace menos de %.0f h, se salta este ciclo"
-                  % (producto["nombre"], AMAZON_CADA_HORAS))
+                  % (_etiqueta(producto), AMAZON_CADA_HORAS))
             continue
         if producto["tipo"] == "amazon":
             if amazon_leidos and ESPERA_ENTRE_AMAZON_SEG > 0:
                 print("  pausa de %.0fs antes de la siguiente ficha de Amazon..." % ESPERA_ENTRE_AMAZON_SEG)
                 time.sleep(ESPERA_ENTRE_AMAZON_SEG)
             amazon_leidos += 1
-        if procesar_producto(producto, estado):
-            hubo_eventos = True
 
-    comprobar_heartbeat(estado, hubo_eventos)
+        nuevo = copy.deepcopy(anterior)
+        bloque = procesar_producto(producto, nuevo)
+        if bloque:
+            bloques.append((producto, bloque))
+            pendientes[pid] = (anterior, nuevo)
+        else:
+            estado[pid] = nuevo
+
+    if bloques:
+        n = len(bloques)
+        titulo = "🔔 <b>%d novedad%s</b>" % (n, "" if n == 1 else "es")
+        try:
+            for texto in componer_mensajes(titulo, bloques):
+                send_telegram(texto)
+            enviado = True
+        except Exception as exc:  # noqa: BLE001
+            print("ERROR: no he podido mandar el mensaje de Telegram: %s" % exc)
+            enviado = False
+        for pid, (anterior, nuevo) in pendientes.items():
+            if enviado:
+                estado[pid] = nuevo
+            else:
+                # No ha llegado: no se marca nada como avisado y se repite en
+                # el siguiente ciclo. Solo se conserva la cuenta de fallos.
+                if "consecutive_failures" in nuevo:
+                    anterior["consecutive_failures"] = nuevo["consecutive_failures"]
+                else:
+                    anterior.pop("consecutive_failures", None)
+
+    comprobar_heartbeat(estado, bool(bloques))
     save_state(estado)
     return 0
 
