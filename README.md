@@ -225,6 +225,43 @@ categorías.
 Si el envío a Telegram falla, no se marca nada como avisado: el aviso se
 repite en la siguiente comprobación.
 
+### ¿Comprar ya o esperar? El resumen del historial (2026-10-29)
+
+Cada aviso trae un resumen del historial de precios para decidir sin abrir
+ningún enlace:
+
+```
+📉 Xiaomi G20 · Amazon
+Ha subido de precio
+💰 125,00 € → 169,99 €  (+44,99 €)
+📊 Historial desde nov 2024 (CamelCamelCamel + bot)
+      mín 123,14 € (abr 2026) · media 151,20 € · máx 187,99 €
+⏳ Un 12 % por encima de su media: mejor esperar
+🛍️ Black Friday en 29 días: suele haber bajadas
+Ver producto  ·  Historial
+```
+
+- **De dónde salen los números**: de la `referencia` de cada producto en
+  `PRODUCTOS` (mínimo, media y máximo copiados **a mano** de
+  [CamelCamelCamel](https://es.camelcamelcamel.com)), ampliada con las
+  lecturas del propio bot (`historico_precios.csv`). Si el bot ve un precio
+  más bajo que el mínimo de la referencia, pasa a ser el nuevo mínimo.
+- **Por qué a mano**: las condiciones de uso de CamelCamelCamel prohíben
+  leer su web de forma automática, así que el bot no lo consulta. Amazon.es
+  no publica el historial sin iniciar sesión, y la API de Keepa (que sí lo
+  permite) cuesta desde 49 €/mes. **Actualiza la referencia cada pocos
+  meses** (fecha en `"copiado"`).
+- **La valoración** compara el precio actual con esos números: ⭐ en su
+  mínimo o casi (a menos de un 3 %), ✅ por debajo de la media, ➖ en la
+  media, ⏳ por encima (mejor esperar). Si queda menos de mes y medio para el
+  Black Friday y no está en su mínimo, lo recuerda. **No es una predicción**:
+  dice si el precio es bueno comparado con su historia.
+- Sin referencia (la Flexispot aún no tiene historial en CamelCamelCamel, y la
+  tienda oficial de Sihoo no está allí) usa solo las lecturas del bot y
+  avisa de que hay poco historial.
+- Los productos de Amazon llevan además el enlace **Historial** a su gráfico
+  de CamelCamelCamel. El resumen semanal incluye solo la línea de valoración.
+
 ## Qué te avisa (y qué no)
 
 | Evento | ¿Avisa? |
@@ -259,6 +296,10 @@ producto, aquí basta con añadir una entrada a la lista `PRODUCTOS` en
     "url": "https://www.amazon.es/dp/B0DJ82JKFL",
     "variant_id": "...",         # solo si tipo == "shopify"
     "umbral_eur": 125.00,
+    # Opcional: el historial de CamelCamelCamel, copiado a mano
+    "referencia": {"copiado": "2026-10-29", "desde": "2024-11-03",
+                   "min": [123.14, "2026-04-13"], "media": 151.20,
+                   "max": [187.99, "2026-08-20"]},
 },
 ```
 

@@ -113,6 +113,12 @@ UA_BOT = "silla-sihoo-bot/1.0 (+https://github.com/balbibots/silla-ergonomica)"
 # Por defecto el umbral es el precio del dia en que se anadio el producto,
 # para que te avise en cuanto baje AUNQUE SEA UN CENTIMO. Sube el numero si
 # solo quieres que te avise a partir de una rebaja mas grande.
+# "referencia" (opcional): el historial de CamelCamelCamel copiado A MANO
+#   (minimo, media y maximo, con fechas). CamelCamelCamel prohibe leer su web
+#   de forma automatica, asi que el bot no lo consulta: usa estos numeros y
+#   los completa con sus propias lecturas (historico_precios.csv). Conviene
+#   actualizarlos cada pocos meses. Los productos de Amazon llevan ademas un
+#   enlace "Historial" a su grafico, con o sin referencia.
 # --------------------------------------------------------------------------
 PRODUCTOS = [
     {
@@ -133,6 +139,9 @@ PRODUCTOS = [
         "tipo": "amazon",
         "url": "https://www.amazon.es/SIHOO-B100-Oficina-Soporte-Adaptable/dp/B0G5WQ65P2",
         "umbral_eur": 169.99,
+        # CamelCamelCamel, vendedores externos (no la vende Amazon).
+        "referencia": {"copiado": "2026-10-29", "desde": "2026-02-01",
+                       "min": [153.42, "2026-06-23"], "media": 181.78, "max": [199.99, "2026-08-29"]},
     },
     {
         "id": "silla_flexispot_ergox_lite_amazon",
@@ -152,6 +161,10 @@ PRODUCTOS = [
         "tipo": "amazon",
         "url": "https://www.amazon.es/dp/B0DJ82JKFL",
         "umbral_eur": 125.00,  # 2026-10-25 (precio de referencia: 199,99)
+        # CamelCamelCamel, vendido por Amazon. (La Flexispot aun no tiene
+        # historial alli: solo usa las lecturas del bot.)
+        "referencia": {"copiado": "2026-10-29", "desde": "2024-11-03",
+                       "min": [123.14, "2026-04-13"], "media": 151.20, "max": [187.99, "2026-08-20"]},
     },
 ]
 
@@ -542,6 +555,9 @@ def _bloque(producto: dict, emoji: str, lineas: list[str], disponible: bool | No
     """Un producto: cabecera, lineas de detalle y pie con stock y enlace."""
     cabecera = "%s <b>%s</b> · %s" % (emoji, _h(producto["nombre"]), _h(producto.get("tienda", "")))
     pie = '<a href="%s">Ver producto</a>' % html.escape(producto["url"], quote=True)
+    asin = _asin(producto["url"]) if producto["tipo"] == "amazon" else None
+    if asin:
+        pie += '  ·  <a href="https://es.camelcamelcamel.com/product/%s">Historial</a>' % asin
     if disponible is not None and producto["tipo"] == "shopify":  # Amazon no lo detecta fiable
         pie = ("✅ Disponible" if disponible else "❌ Agotado") + "  ·  " + pie
     return "\n".join([cabecera] + lineas + [pie])
@@ -683,6 +699,117 @@ def guardar_historico(producto: dict, precio: float, disponible: bool, detalle: 
         print("  (no he podido guardar el historico: %s)" % exc)
 
 
+# --------------------------------------------------------------------------
+# Resumen del historial: ¿es buen momento para comprar o mejor esperar?
+#
+# No es una prediccion: compara el precio actual con el minimo, la media y el
+# maximo conocidos (la "referencia" de CamelCamelCamel + las lecturas del bot)
+# y mira si se acerca el Black Friday.
+# --------------------------------------------------------------------------
+
+MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+DIAS_AVISO_BLACK_FRIDAY = 45
+
+
+def _mes(fecha: datetime) -> str:
+    return "%s %d" % (MESES[fecha.month - 1], fecha.year)
+
+
+def _fecha(texto: str) -> datetime:
+    f = datetime.fromisoformat(texto)
+    return f if f.tzinfo else f.replace(tzinfo=timezone.utc)
+
+
+def _lecturas(producto: dict) -> list[tuple[datetime, float]]:
+    """Las lecturas del bot para este producto, de la mas antigua a la ultima."""
+    try:
+        with open(HISTORY_FILE, newline="", encoding="utf-8") as fh:
+            return [(_fecha(f["fecha_utc"]), float(f["precio_eur"]))
+                    for f in csv.DictReader(fh) if f.get("id") == producto["id"]]
+    except (OSError, ValueError, KeyError):
+        return []
+
+
+def black_friday(anio: int) -> datetime:
+    """El viernes siguiente al cuarto jueves de noviembre."""
+    primero = datetime(anio, 11, 1, tzinfo=timezone.utc)
+    primer_jueves = primero + timedelta(days=(3 - primero.weekday()) % 7)
+    return primer_jueves + timedelta(days=22)
+
+
+def _linea_black_friday(ahora: datetime) -> str | None:
+    bf = black_friday(ahora.year)
+    dias = (bf.date() - ahora.date()).days
+    if -3 <= dias <= 7:  # la semana de ofertas, hasta el Cyber Monday
+        return "🛍️ Semana de Black Friday: es cuando suelen estar los mínimos del año"
+    if 0 < dias <= DIAS_AVISO_BLACK_FRIDAY:
+        return "🛍️ Black Friday en %d días: suele haber bajadas" % dias
+    return None
+
+
+def resumen_historial(producto: dict, precio: float, ahora: datetime | None = None) -> list[str]:
+    """Lineas de resumen para el mensaje (vacio si aun no hay con que comparar)."""
+    ahora = ahora or datetime.now(timezone.utc)
+    lecturas = _lecturas(producto)
+    ref = producto.get("referencia") or {}
+
+    # Minimo y maximo: lo que diga CamelCamelCamel, ampliado con lo que haya
+    # visto el bot (sus lecturas son posteriores a la copia).
+    candidatos_min = [(ref["min"][0], _fecha(ref["min"][1]))] if ref.get("min") else []
+    candidatos_max = [(ref["max"][0], _fecha(ref["max"][1]))] if ref.get("max") else []
+    candidatos_min += [(p, f) for f, p in lecturas] + [(precio, ahora)]
+    candidatos_max += [(p, f) for f, p in lecturas] + [(precio, ahora)]
+    if not lecturas and not ref.get("min"):
+        return []
+    minimo, f_min = min(candidatos_min, key=lambda c: (c[0], -c[1].timestamp()))
+    maximo, f_max = max(candidatos_max, key=lambda c: (c[0], c[1].timestamp()))
+    # La media de CamelCamelCamel cubre meses; la del bot, solo sus semanas.
+    media = ref.get("media") or sum(p for _, p in lecturas) / len(lecturas)
+
+    desde = _fecha(ref["desde"]) if ref.get("desde") else lecturas[0][0]
+    dias_historial = (ahora - desde).days
+    fuente = "CamelCamelCamel + bot" if ref else "lecturas del bot"
+    lineas = [
+        "📊 <b>Historial</b> desde %s <i>(%s)</i>" % (_mes(desde), fuente),
+        "      mín %s (%s) · media %s · máx %s" % (_eur(minimo), _mes(f_min), _eur(media), _eur(maximo)),
+    ]
+
+    dif = (precio - media) / media * 100
+    if maximo - minimo < 0.005:
+        lineas.append("➖ Siempre lo he visto a este precio: aún no hay ofertas con que comparar")
+    elif precio <= minimo + 0.005:
+        lineas.append("⭐ <b>Es su precio más bajo conocido</b>: buen momento para comprar")
+    elif precio <= minimo * 1.03:
+        lineas.append("⭐ <b>Casi en su mínimo</b> (a %s): buen momento para comprar" % _eur(precio - minimo))
+    elif dif < -1:
+        lineas.append("✅ Un %.0f %% por debajo de su media, pero aún %s por encima del mínimo"
+                      % (-dif, _eur(precio - minimo)))
+    elif dif <= 1:
+        lineas.append("➖ En su precio medio: si no hay prisa, puede bajar")
+    else:
+        lineas.append("⏳ <b>Un %.0f %% por encima de su media</b>: mejor esperar" % dif)
+
+    # Cuanto lleva a este precio (solo con las lecturas del bot).
+    if lecturas and abs(lecturas[-1][1] - precio) < 0.005:
+        inicio = lecturas[-1][0]
+        for f, p in reversed(lecturas):
+            if abs(p - precio) >= 0.005:
+                break
+            inicio = f
+        dias = (ahora - inicio).days
+        if dias >= 1:
+            lineas.append("⏱️ Lleva %d día%s a este precio" % (dias, "" if dias == 1 else "s"))
+
+    bf = _linea_black_friday(ahora)
+    if bf and precio > minimo * 1.03:
+        lineas.append(bf)
+    if dias_historial < 60:
+        cuanto = ("menos de un día" if dias_historial < 1 else
+                  "%d día%s" % (dias_historial, "" if dias_historial == 1 else "s"))
+        lineas.append("<i>ℹ️ Solo %s de historial: tómalo con cautela.</i>" % cuanto)
+    return lineas
+
+
 def procesar_producto(producto: dict, estado_producto: dict) -> str | None:
     """Comprueba un producto, actualiza su estado y devuelve el bloque del
     mensaje de Telegram con sus novedades (None si no hay nada que contar)."""
@@ -750,6 +877,7 @@ def procesar_producto(producto: dict, estado_producto: dict) -> str | None:
                           % (_h(detalle["cupon"]), _eur(detalle["precio_sin_cupon"])))
         elif anterior_cupon:
             lineas.append("🎟️ El cupón de %s ya no aparece." % _h(anterior_cupon))
+        lineas.extend(resumen_historial(producto, precio))
 
     estado_producto["last_price"] = precio
     if detalle.get("cupon"):
@@ -786,6 +914,12 @@ def comprobar_heartbeat(estado: dict, hubo_eventos: bool) -> None:
         lineas = ["💰 <b>%s</b>" % _eur(precio) if precio is not None else "<i>Sin datos todavía</i>"]
         if ep.get("last_coupon"):
             lineas.append("🎟️ Con cupón de %s" % _h(ep["last_coupon"]))
+        if precio is not None:
+            # En el resumen semanal, solo la valoracion (la 3a linea), para
+            # que no se haga largo.
+            resumen = resumen_historial(p, precio)
+            if resumen:
+                lineas.append(resumen[2])
         bloques.append((p, _bloque(p, "•", lineas, ep.get("last_available"))))
 
     try:
