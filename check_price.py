@@ -122,38 +122,6 @@ UA_BOT = "silla-sihoo-bot/1.0 (+https://github.com/balbibots/silla-ergonomica)"
 # --------------------------------------------------------------------------
 PRODUCTOS = [
     {
-        "id": "silla_b100_oficial",
-        "categoria": "Sillas",
-        "nombre": "Sihoo B100 blanca",
-        "tienda": "Sihoo (tienda oficial)",
-        "tipo": "shopify",
-        "url": "https://eu.sihoo.com/es/products/sihoo-b100-ergonomic-office-chair-with-flip-up-armrest",
-        "variant_id": "48150078357718",  # Blanco / Standard
-        "umbral_eur": 199.99,
-    },
-    {
-        "id": "silla_b100_amazon",
-        "categoria": "Sillas",
-        "nombre": "Sihoo B100 blanca",
-        "tienda": "Amazon",
-        "tipo": "amazon",
-        "url": "https://www.amazon.es/SIHOO-B100-Oficina-Soporte-Adaptable/dp/B0G5WQ65P2",
-        "umbral_eur": 169.99,
-        # CamelCamelCamel, vendedores externos (no la vende Amazon).
-        "referencia": {"copiado": "2026-10-29", "desde": "2026-02-01",
-                       "min": [153.42, "2026-06-23"], "media": 181.78, "max": [199.99, "2026-08-29"]},
-    },
-    {
-        "id": "silla_flexispot_ergox_lite_amazon",
-        "categoria": "Sillas",
-        "nombre": "Flexispot ErgoX Lite beige",
-        "tienda": "Amazon",
-        "tipo": "amazon",
-        "url": "https://www.amazon.es/dp/B0H3ZVDKYV",
-        # 2026-10-24: 275,49 EUR con un cupon de 45 EUR -> 230,49 EUR.
-        "umbral_eur": 230.49,
-    },
-    {
         "id": "aspiradora_xiaomi_g20_amazon",
         "categoria": "Aspiradoras",
         "nombre": "Xiaomi G20",
@@ -161,8 +129,7 @@ PRODUCTOS = [
         "tipo": "amazon",
         "url": "https://www.amazon.es/dp/B0DJ82JKFL",
         "umbral_eur": 125.00,  # 2026-10-25 (precio de referencia: 199,99)
-        # CamelCamelCamel, vendido por Amazon. (La Flexispot aun no tiene
-        # historial alli: solo usa las lecturas del bot.)
+        # CamelCamelCamel, vendido por Amazon.
         "referencia": {"copiado": "2026-10-29", "desde": "2024-11-03",
                        "min": [123.14, "2026-04-13"], "media": 151.20, "max": [187.99, "2026-08-20"]},
     },

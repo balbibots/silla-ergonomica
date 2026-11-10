@@ -2,18 +2,17 @@
 
 Mismo tipo de bot que [yepoda-price-bot](https://github.com/balbibots/yepoda-price-bot),
 pero generalizado para vigilar **varios productos de fuentes distintas** a la
-vez, agrupados por categorías. De momento vigila cuatro:
+vez, agrupados por categorías. De momento vigila uno:
 
 | Categoría | Producto | Fuente | Último precio confirmado | Aviso si baja de |
 |---|---|---|---|---|
-| 🪑 Sillas | Sihoo B100, blanca | [Tienda oficial](https://eu.sihoo.com/es/products/sihoo-b100-ergonomic-office-chair-with-flip-up-armrest) | 199,99 € (2026-10-23) | 199,99 € |
-| 🪑 Sillas | Sihoo B100, blanca | [Amazon.es](https://www.amazon.es/SIHOO-B100-Oficina-Soporte-Adaptable/dp/B0G5WQ65P2) | 169,99 € (2026-10-23) | 169,99 € |
-| 🪑 Sillas | Flexispot ErgoX Lite, beige | [Amazon.es](https://www.amazon.es/dp/B0H3ZVDKYV) | 230,49 € con cupón de 45 € (275,49 € sin cupón, 2026-10-24) | 230,49 € |
 | 🧹 Aspiradoras | Xiaomi G20 | [Amazon.es](https://www.amazon.es/dp/B0DJ82JKFL) | 125,00 € (2026-10-25; precio de referencia 199,99 €) | 125,00 € |
 
-> Hasta el 2026-10-23 el bot vigilaba por error el modelo Doro C300; se cambió
-> al B100, que es el que se quería. Las lecciones de abajo se aprendieron con
-> el C300 pero valen igual.
+> Del 2026-10 al 2026-11-10 vigiló también tres sillas (Sihoo B100 en la
+> tienda oficial y en Amazon, y Flexispot ErgoX Lite en Amazon). Se quitaron al
+> terminar ese seguimiento; sus lecturas siguen en `historico_precios.csv`. El
+> código para leer tiendas Shopify como la de Sihoo se mantiene, por si se
+> vuelve a necesitar. Las lecciones de abajo se aprendieron con ellas.
 
 El umbral de cada uno está puesto **al precio de hoy**: te avisará en cuanto
 baje aunque sea un céntimo. Súbelo en `check_price.py` (variable `PRODUCTOS`)
@@ -256,9 +255,9 @@ Ver producto  ·  Historial
   media, ⏳ por encima (mejor esperar). Si queda menos de mes y medio para el
   Black Friday y no está en su mínimo, lo recuerda. **No es una predicción**:
   dice si el precio es bueno comparado con su historia.
-- Sin referencia (la Flexispot aún no tiene historial en CamelCamelCamel, y la
-  tienda oficial de Sihoo no está allí) usa solo las lecturas del bot y
-  avisa de que hay poco historial.
+- Sin referencia (un producto que aún no tiene historial en CamelCamelCamel,
+  o una tienda que no está allí, como la oficial de Sihoo) usa solo las
+  lecturas del bot y avisa de que hay poco historial.
 - Los productos de Amazon llevan además el enlace **Historial** a su gráfico
   de CamelCamelCamel. El resumen semanal incluye solo la línea de valoración.
 
@@ -381,14 +380,6 @@ Deberías ver algo como:
 Bot arrancado en modo bucle. Comprobando cada 6.0 horas.
 
 [2026-10-25T...] Nueva comprobacion...
-  Sihoo: leyendo con navegador real (Chromium)
-[Sihoo B100 blanca · Sihoo (tienda oficial)] 199.99 EUR | disponible: True | umbral: 199.99 EUR
-  Amazon: leyendo con navegador real (Chromium)
-[Sihoo B100 blanca · Amazon] 199.99 EUR | disponible: True | umbral: 169.99 EUR
-  pausa de 60s antes de la siguiente ficha de Amazon...
-  Amazon: leyendo con navegador real (Chromium)
-[Flexispot ErgoX Lite beige · Amazon] 230.49 EUR (275.49 sin cupon, cupon 45,00 €) | disponible: True | umbral: 230.49 EUR
-  pausa de 60s antes de la siguiente ficha de Amazon...
   Amazon: leyendo con navegador real (Chromium)
 [Xiaomi G20 · Amazon] 125.00 EUR | disponible: True | umbral: 125.00 EUR
 ```
