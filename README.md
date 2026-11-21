@@ -36,7 +36,8 @@ Además, para los productos que sigues: 🎯 precio objetivo, 📉 bajada,
 |---|---|
 | Seguimiento de varios productos (añadir y quitar por ASIN o URL) | ✅ Operativo |
 | Un producto en varias tiendas, avisando con el mejor precio con stock | ✅ Operativo: Amazon, Powerplanet, MediaMarkt y la tienda oficial de Dreame. Probado con lecturas reales |
-| PcComponentes | 🔗 Solo como enlace en las tarjetas: bloquea la lectura automática |
+| PcComponentes | ✅ Seguida, leyendo su precio en pccomtracker.com (PcComponentes bloquea al bot). Probado con la G20 y la U20 reales |
+| Histórico de tiendas de terceros (reacofertas 180 d, pccomtracker mínimo del año) | ✅ Operativo para PcComponentes y Powerplanet; MediaMarkt aún no aparece en reacofertas para estas fichas |
 | Nuevo, segunda mano, reacondicionado y agotado bien distinguidos | ✅ Operativo (comprobado en la Pi con la G20) |
 | Histórico en SQLite, migración del CSV y CSV compatible | ✅ Operativo (198 filas migradas en la Pi) |
 | Descubrimiento automático por categorías con CholloMazon | ✅ Probado con el CSV real; pendiente de su primera semana en la Pi |
@@ -71,7 +72,7 @@ Lo que se investigó y comprobó el 21/11/2026:
 | **Powerplanet** | ✅ Sí | Datos estructurados schema.org (JSON-LD) de la ficha: precio, stock, condición, vendedor y EAN. Una petición, sin navegador | No | Su robots.txt permite las fichas |
 | **MediaMarkt** | ✅ Sí | Igual, JSON-LD de la ficha. Muestra si lo vende MediaMarkt o un vendedor externo del marketplace | No | Su robots.txt lo permite todo. Sus [condiciones de uso](https://www.mediamarkt.es/es/legal/condiciones-de-uso-de-la-web) prohíben copiar contenidos "para propósitos públicos o comerciales" y saltarse medidas de seguridad: un aviso privado no hace ninguna de las dos cosas |
 | **Tienda oficial de Dreame** (Shopify) | ✅ Sí | El JSON público del producto (`/products/<ficha>.js`): precio, stock y EAN | No | Su robots.txt permite `/products/` |
-| **PcComponentes** | ❌ No | — | Existe, pero su robots.txt lo prohíbe (`Disallow: /a/*/historicprices`) | Sirve un desafío de Cloudflare ("Un momento…", HTTP 403) a peticiones directas y a un navegador real automatizado. No se intenta superar: va como enlace en las tarjetas para que lo mires tú. Su [aviso legal](https://www.pccomponentes.com/aviso-legal) prohíbe explotar sus contenidos sin autorización y eludir sus protecciones |
+| **PcComponentes** | 🟡 Indirectamente | La ficha pública de **pccomtracker.com** del producto: su JSON-LD trae el precio y el stock de PcComponentes, la URL exacta de la ficha de PcComponentes (así se comprueba que es la misma) y la hora de su última comprobación. Un dato de más de 26 h no se usa | reacofertas (180 d) y pccomtracker (mínimo del año) | PcComponentes responde 403 (Cloudflare) a urllib y a un Chromium automatizado; su robots.txt veta el agente `Python-urllib` y sus rutas de histórico y API. No se intenta superar. pccomtracker permite sus fichas en su robots.txt (solo veta `/api/`, `/admin/` y `/goto/`); no publica condiciones de uso |
 | **Tienda de Xiaomi** (mi.com) | ❌ No | — | No | La ficha no publica el precio en datos estructurados. Va como enlace |
 
 Para no comparar churras con merinas, **cada ficha se comprueba con el EAN** del
@@ -179,6 +180,27 @@ subcategoría, como "Hogar > Cocina".
 Los secretos van en `.env` ([`.env.example`](.env.example)), nunca en el
 JSON.
 
+### Precios e históricos de terceros
+
+Dos webs españolas siguen PcComponentes (y otras tiendas) a diario y publican
+sus datos en páginas que su robots.txt permite. El bot las usa con peticiones
+normales identificadas como el bot (`vigilante/terceros.py`):
+
+| Web | Qué se usa | Cobertura | Cada cuánto |
+|---|---|---|---|
+| [pccomtracker.com](https://pccomtracker.com/) | Precio y stock actuales de PcComponentes (JSON-LD) y, de su FAQ, el mínimo del último año con fecha y el precio habitual | PcComponentes (y su comparación con Amazon) | Precio: cada 60 min. Mínimo: cada 12 h |
+| [reacofertas.es](https://reacofertas.es/tracking-precios) | La serie de los últimos 180 días del gráfico (`?q=<URL de la tienda>`) | PcComponentes, MediaMarkt y Powerplanet (unos 160 000 productos) | Cada 12 h |
+
+- La URL de pccomtracker se pone una vez por producto (`"pccomtracker"` en la
+  tienda). Su buscador va por `/api/`, que su robots.txt veta, así que no se usa.
+- Una serie de reacofertas solo se guarda si su último precio coincide (±3 %)
+  con el que el bot acaba de leer en esa tienda: si no, es otra ficha.
+- Las tarjetas muestran esos mínimos como referencia, con su fuente y fecha
+  ("📊 Mínimo 180 d en PcComponentes según reacofertas: 169,99 € (07/11/2026)").
+  No cambian qué se avisa: los avisos siguen dependiendo de tus lecturas.
+- Las dos webs no siempre coinciden en la fecha del mínimo (reacofertas
+  sincroniza una vez al día); por eso se cita cada una por separado.
+
 ### Un producto en varias tiendas
 
 ```json
@@ -190,10 +212,9 @@ JSON.
   "ean": "6976233670607",
   "tiendas": [
     {"tienda": "Dreame", "url": "https://es.dreametech.com/products/aspirador-sin-cable-u20"},
-    {"tienda": "MediaMarkt", "url": "https://www.mediamarkt.es/es/product/_aspirador-escoba-dreame-308668681-370-w-60-min-negro-139804042.html"}
-  ],
-  "enlaces": [
-    {"tienda": "PcComponentes", "url": "https://www.pccomponentes.com/dreame-u20-aspiradora-escoba-mano-sin-cable-370w-blanca"}
+    {"tienda": "MediaMarkt", "url": "https://www.mediamarkt.es/es/product/_aspirador-escoba-dreame-308668681-370-w-60-min-negro-139804042.html"},
+    {"tienda": "PcComponentes", "url": "https://www.pccomponentes.com/dreame-u20-aspiradora-escoba-mano-sin-cable-370w-blanca",
+     "pccomtracker": "https://pccomtracker.com/producto/dreame-u20-aspiradora-escobamano-sin-cable-370w-blanca-20128212"}
   ]
 }
 ```
@@ -405,7 +426,7 @@ En `data/`, en la propia Pi:
 python -m unittest discover -s tests -v
 ```
 
-Son 70 pruebas sin red. Cubren:
+Son 76 pruebas sin red. Cubren:
 
 - **Lectura de la ficha:** producto y variante correctos, precio de oferta
   frente al tachado y las cuotas, decimales con coma, página sin precio,
@@ -425,9 +446,12 @@ Son 70 pruebas sin red. Cubren:
 - **Chollometro:** formato real del RSS, errores de precio solo en el título,
   calderilla y temas que no te interesan fuera, chollazos del 70 %, tus
   productos sin confundir modelos (G20, G20 Lite, G20 Max).
+- **Terceros:** precio de PcComponentes en pccomtracker (otra ficha, dato
+  antiguo, agotado), mínimo y precio habitual de su FAQ, serie de reacofertas
+  y su comprobación contra la lectura, refresco cada 12 h y cita en la tarjeta.
 - **Varias tiendas:** JSON-LD de Powerplanet y MediaMarkt, Shopify, EAN de otra
-  variante rechazado, segunda mano, desafío anti-bots, PcComponentes solo como
-  enlace, mejor precio entre tiendas y bajada medida contra él, lecturas
+  variante rechazado, segunda mano, desafío anti-bots, PcComponentes solo con
+  pccomtracker, mejor precio entre tiendas y bajada medida contra él, lecturas
   antiguas, reposición en cualquier tienda y la primera pasada sin avisos
   falsos.
 - **Configuración y avisos:** actualización de la configuración antigua,

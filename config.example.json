@@ -1,12 +1,13 @@
 {
-  "version": 6,
+  "version": 7,
   "canal": "telegram",
   "seguimiento": {
     "activo": true,
     "intervalo_min_por_fuente": {
       "amazon_ficha": 120,
       "jsonld": 30,
-      "shopify": 30
+      "shopify": 30,
+      "pccomtracker": 60
     },
     "lectura_extra_min_entre": 60,
     "pausa_entre_amazon_seg": 60,
@@ -43,14 +44,14 @@
         {
           "tienda": "MediaMarkt",
           "url": "https://www.mediamarkt.es/es/product/_aspirador-escoba-xiaomi-g20-460-w-60-min-blanco-148640073.html"
-        }
-      ],
-      "enlaces": [
+        },
         {
           "tienda": "PcComponentes",
           "url": "https://www.pccomponentes.com/xiaomi-vacuum-cleaner-g20-aspiradora-escoba-mano-sin-cable-460w-beige",
-          "nota": "color beige"
-        },
+          "pccomtracker": "https://pccomtracker.com/producto/xiaomi-vacuum-cleaner-g20-aspiradora-escobamano-sin-cable-460w-beige-71159"
+        }
+      ],
+      "enlaces": [
         {
           "tienda": "Xiaomi",
           "url": "https://www.mi.com/es/product/xiaomi-vacuum-cleaner-g20/"
@@ -80,14 +81,14 @@
         {
           "tienda": "MediaMarkt",
           "url": "https://www.mediamarkt.es/es/product/_aspirador-escoba-dreame-308668681-370-w-60-min-negro-139804042.html"
-        }
-      ],
-      "enlaces": [
+        },
         {
           "tienda": "PcComponentes",
-          "url": "https://www.pccomponentes.com/dreame-u20-aspiradora-escoba-mano-sin-cable-370w-blanca"
+          "url": "https://www.pccomponentes.com/dreame-u20-aspiradora-escoba-mano-sin-cable-370w-blanca",
+          "pccomtracker": "https://pccomtracker.com/producto/dreame-u20-aspiradora-escobamano-sin-cable-370w-blanca-20128212"
         }
       ],
+      "enlaces": [],
       "en_comunidad": {
         "incluir": [
           "dreame u20"

@@ -187,6 +187,8 @@ def cmd_estado(_args) -> int:
                                                 cfg["seguimiento"]["reglas"]["historial_caducidad_dias"]) is not None
                     print("                 historial 365 d importado el %s: %s"
                           % (fecha_corta(ext[0])[:10], "vigente" if vigente else "NO vigente: reimportar"))
+            for linea in seguimiento.referencias_terceros(t, almacen, None, ahora):
+                print("                 " + linea)
         for nombre, url, _nota in p.enlaces:
             print("    %-12s solo enlace: %s" % (nombre, url))
         if est_p.get("aviso_pendiente"):

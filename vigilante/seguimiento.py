@@ -13,6 +13,11 @@ reposicion) se aplican a ese mejor precio:
 - el minimo registrado es el mas bajo visto en cualquiera de sus tiendas;
 - la reposicion es que vuelva a haber unidades nuevas en alguna tienda.
 
+Historicos de terceros: cada 12 h, para cada tienda que cubran, se guarda la
+serie de 180 dias de reacofertas y el minimo del ano de pccomtracker (ver
+terceros.py). No cambian que eventos se avisan: la tarjeta los muestra como
+referencia, con su fuente y fecha.
+
 Un aviso que no se puede enviar se queda pendiente y se reintenta en el
 siguiente ciclo, en vez de perderse.
 """
@@ -25,7 +30,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import config, historial_amazon, reglas, tiendas
+from . import config, historial_amazon, reglas, terceros, tiendas
 from .almacen import Almacen
 from .modelo import Observacion, Producto, Tienda, ahora_utc, desde_iso, eur, fecha_corta, iso
 from .tarjeta import Tarjeta
@@ -54,6 +59,57 @@ def _toca(lector: str, est: dict, seg: dict, ahora: datetime) -> bool:
 
 def leer(t: Tienda, p: Producto) -> Observacion:
     return tiendas.leer(t, p.ean)
+
+
+TERCEROS_CADA = timedelta(hours=12)
+TERCEROS_VIGENCIA = timedelta(days=3)
+
+
+def _historicos_terceros(t: Tienda, obs: Observacion, almacen: Almacen, ahora: datetime, descargar) -> None:
+    """Refresca (cada 12 h) los historicos de terceros de esta tienda. Un
+    fallo solo se anota en el log: no afecta a la lectura ni a los avisos."""
+    est = almacen.estado(t.clave)
+    ultimo = est.get("terceros_intento")
+    if ultimo and ahora - desde_iso(ultimo) < TERCEROS_CADA:
+        return
+    est["terceros_intento"] = iso(ahora)
+    almacen.guardar_estado(t.clave, est)
+    if terceros.cubre_reacofertas(t.url):
+        try:
+            puntos = terceros.serie_reacofertas(descargar(terceros.url_reacofertas(t.url)))
+            if terceros.cuadra(puntos, obs.precio_cent):
+                almacen.importar_historial(t.clave, terceros.REACOFERTAS, ahora, puntos)
+                print("  [%s] historico de reacofertas: %d cambios desde %s"
+                      % (t.nombre, len(puntos), fecha_corta(puntos[0][0])[:10]))
+            else:
+                print("  [%s] la serie de reacofertas (%s) no cuadra con la lectura (%s): descartada"
+                      % (t.nombre, eur(puntos[-1][1]), eur(obs.precio_cent)))
+        except Exception as exc:  # noqa: BLE001
+            print("  [%s] historico de reacofertas no disponible: %s" % (t.nombre, exc))
+    if t.extra.get(terceros.PCCOMTRACKER):
+        try:
+            r = terceros.resumen_pccomtracker(descargar(t.extra[terceros.PCCOMTRACKER]))
+            if r.get("minimo_cent") and r.get("minimo_fecha"):
+                almacen.importar_historial(t.clave, terceros.PCCOMTRACKER, ahora,
+                                           [(r["minimo_fecha"], r["minimo_cent"])])
+        except Exception as exc:  # noqa: BLE001
+            print("  [%s] resumen de pccomtracker no disponible: %s" % (t.nombre, exc))
+
+
+def referencias_terceros(t: Tienda, almacen: Almacen, precio: int | None, ahora: datetime) -> list[str]:
+    """Lineas para la tarjeta con los minimos de terceros, solo si son recientes."""
+    out = []
+    for fuente, periodo in ((terceros.REACOFERTAS, "180 d"), (terceros.PCCOMTRACKER, "del año")):
+        ext = almacen.historial_externo(t.clave, fuente)
+        if not ext or ahora - ext[0] > TERCEROS_VIGENCIA or not ext[1]:
+            continue
+        fecha, minimo = min(ext[1], key=lambda x: (x[1], x[0]))
+        linea = "📊 Mínimo %s en %s según %s: %s (%s)" % (periodo, t.nombre, fuente, eur(minimo),
+                                                       fecha_corta(fecha)[:10])
+        if precio is not None and precio <= minimo:
+            linea += " · lo iguala o mejora"
+        out.append(linea)
+    return out
 
 
 def _csv_compatible(ruta: Path, p: Producto, t: Tienda, obs: Observacion) -> None:
@@ -101,7 +157,7 @@ def _serie_producto(almacen: Almacen, p: Producto, hasta: datetime) -> list[tupl
 
 
 def tarjeta_para(p: Producto, mejor: dict, sit: list[dict], obs: Observacion, res: reglas.Resultado,
-                 serie_previa, anterior, ext) -> Tarjeta:
+                 serie_previa, anterior, ext, refs: list[str] | None = None) -> Tarjeta:
     motivo = res.principal
     t_best: Tienda = mejor["tienda"]
     fila = mejor["fila"]
@@ -126,6 +182,8 @@ def tarjeta_para(p: Producto, mejor: dict, sit: list[dict], obs: Observacion, re
     vendido = ", vendido por %s" % fila["vendedor"] if fila["vendedor"] else ""
     t.disponibilidad = "✅ En stock · Nuevo en %s%s" % (t_best.nombre, vendido)
     t.fuente = "Fuente: ficha de %s" % t_best.nombre
+    if t_best.lector == "pccomtracker":
+        t.fuente = "Fuente: precio de %s publicado por pccomtracker.com (puede llevar unas horas)" % t_best.nombre
     if motivo.tipo == "minimo_365":
         t.fuente += " e historial de 365 d de Amazon (importado el %s, completado con mis lecturas)" \
             % fecha_corta(ext[0])[:10]
@@ -143,6 +201,7 @@ def tarjeta_para(p: Producto, mejor: dict, sit: list[dict], obs: Observacion, re
         "minimo_igualado": "🔁 Iguala su mínimo registrado",
     }
     t.notas += [notas[m.tipo] for m in res.motivos[1:] if notas.get(m.tipo)]
+    t.notas += refs or []
     otras = []
     for s in sit:
         if s["tienda"] is t_best:
@@ -185,7 +244,7 @@ def _estado_producto(almacen: Almacen, p: Producto) -> tuple[str, dict]:
 
 
 def _leer_tienda(p: Producto, t: Tienda, almacen: Almacen, seg: dict, notificador, lector, ahora_t,
-                 ahora_fija, ruta_csv) -> bool:
+                 ahora_fija, ruta_csv, descargar=None) -> bool:
     """Lee una tienda y guarda el resultado. True si hubo lectura valida."""
     est = almacen.estado(t.clave)
     est["ultimo_intento"] = iso(ahora_t)
@@ -225,12 +284,18 @@ def _leer_tienda(p: Producto, t: Tienda, almacen: Almacen, seg: dict, notificado
     else:
         vendedor = " (vendido por %s)" % obs.vendedor if obs.vendedor and obs.vendedor != t.nombre else ""
         print("[%s] %s%s" % (etiqueta, eur(obs.precio_cent), vendedor))
+    if descargar:
+        _historicos_terceros(t, obs, almacen, ahora_t, descargar)
     return True
 
 
 def ciclo(cfg: dict, almacen: Almacen, notificador, ahora: datetime | None = None, lector=leer,
-          dormir=time.sleep) -> int:
-    """Una pasada por las tiendas a las que les toca. Devuelve avisos enviados."""
+          dormir=time.sleep, descargar=None) -> int:
+    """Una pasada por las tiendas a las que les toca. Devuelve avisos enviados.
+    Los historicos de terceros solo se piden con el lector real (o si se pasa
+    'descargar', en las pruebas)."""
+    if descargar is None and lector is leer:
+        descargar = terceros.descargar
     seg = cfg["seguimiento"]
     ruta_csv = Path(os.environ.get("HISTORY_FILE", config.RAIZ / "data" / "historico_precios.csv"))
     enviados, primero_amazon = 0, True
@@ -247,7 +312,7 @@ def ciclo(cfg: dict, almacen: Almacen, notificador, ahora: datetime | None = Non
                 if not primero_amazon:
                     dormir(seg["pausa_entre_amazon_seg"])
                 primero_amazon = False
-            leidas += _leer_tienda(p, t, almacen, seg, notificador, lector, ahora_t, ahora, ruta_csv)
+            leidas += _leer_tienda(p, t, almacen, seg, notificador, lector, ahora_t, ahora, ruta_csv, descargar)
         if not leidas:
             almacen.guardar_estado(clave_p, est_p)
             continue
@@ -299,7 +364,8 @@ def _evaluar(p: Producto, clave_p: str, est_p: dict, almacen: Almacen, seg: dict
     repetido = motivo is not None and motivo.tipo not in ("bajada", "subida") and almacen.aviso_enviado(
         p.clave, motivo.tipo, obs.precio_cent, desde=ahora - VENTANA_DUPLICADOS)
     if motivo and not repetido:
-        t = tarjeta_para(p, mejor, sit, obs, res, serie_previa, anterior, ext)
+        refs = referencias_terceros(mejor["tienda"], almacen, obs.precio_cent, ahora)
+        t = tarjeta_para(p, mejor, sit, obs, res, serie_previa, anterior, ext, refs)
         try:
             notificador.enviar(t)
             almacen.registrar_aviso(p.clave, motivo.tipo, obs.precio_cent, "seguimiento",

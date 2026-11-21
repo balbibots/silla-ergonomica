@@ -20,13 +20,22 @@ from .modelo import Producto, Tienda, a_centimos, asin_desde, url_amazon
 
 RAIZ = Path(__file__).resolve().parent.parent
 EJEMPLO = RAIZ / "config.example.json"
-VERSION = 6
+VERSION = 7
 CANALES = ("telegram", "discord", "consola")
-FUENTES = ("amazon_ficha", "jsonld", "shopify")
+FUENTES = ("amazon_ficha", "jsonld", "shopify", "pccomtracker")
 # Tiendas que no dejan leer sus fichas de forma automatica (comprobado el
 # 21/11/2026): van como enlace en las tarjetas, nunca como tienda leida.
-NO_LEIBLES = {"pccomponentes.com": "PcComponentes sirve un desafio de Cloudflare (HTTP 403) "
-                                   "incluso a un navegador real; ponla en 'enlaces'"}
+NO_LEIBLES = {"pccomponentes.com": "PcComponentes no deja leer sus fichas al bot (Cloudflare, HTTP 403): "
+                                   "anade 'pccomtracker' con la URL de su ficha en pccomtracker.com, "
+                                   "o ponla en 'enlaces'"}
+# v7: PcComponentes pasa de enlace a tienda seguida, leida en pccomtracker.com
+# (fichas comprobadas el 21/11/2026: misma URL de PcComponentes en su JSON-LD).
+PCCOMTRACKER_V7 = {
+    "https://www.pccomponentes.com/xiaomi-vacuum-cleaner-g20-aspiradora-escoba-mano-sin-cable-460w-beige":
+        "https://pccomtracker.com/producto/xiaomi-vacuum-cleaner-g20-aspiradora-escobamano-sin-cable-460w-beige-71159",
+    "https://www.pccomponentes.com/dreame-u20-aspiradora-escoba-mano-sin-cable-370w-blanca":
+        "https://pccomtracker.com/producto/dreame-u20-aspiradora-escobamano-sin-cable-370w-blanca-20128212",
+}
 
 # v4: la G20 pasa a seguirse en varias tiendas y se anaden la U20 y la R20 SE-A.
 # Fichas y EAN comprobados el 21/11/2026.
@@ -189,6 +198,23 @@ def actualizar_esquema(cfg: dict) -> tuple[dict, list[str]]:
                 intervalos[lector] = 30
         cambios.append("Powerplanet, MediaMarkt y Dreame se leen cada 30 min")
         cfg["version"] = 6
+    if cfg.get("version", 1) < 7:
+        # v7: PcComponentes se sigue de verdad (via pccomtracker) y se guardan
+        # los historicos de reacofertas y pccomtracker.
+        for prod in cfg.get("productos", []):
+            quedan = []
+            for e in prod.get("enlaces", []):
+                pct = PCCOMTRACKER_V7.get(e.get("url", "").rstrip("/"))
+                if pct and prod.get("tiendas") is not None:
+                    prod["tiendas"].append({"tienda": "PcComponentes", "url": e["url"], "pccomtracker": pct})
+                    cambios.append("la %s se sigue tambien en PcComponentes" % prod.get("nombre"))
+                else:
+                    quedan.append(e)
+            if "enlaces" in prod:
+                prod["enlaces"] = quedan
+        intervalos = cfg.setdefault("seguimiento", {}).setdefault("intervalo_min_por_fuente", {})
+        intervalos.setdefault("pccomtracker", 60)
+        cfg["version"] = 7
     antes = json.dumps(cfg, sort_keys=True)
     _completar(cfg, ejemplo())
     if json.dumps(cfg, sort_keys=True) != antes:
@@ -328,11 +354,17 @@ def _tienda(t: dict) -> Tienda:
     if not url.startswith("https://"):
         raise ValueError("la tienda %s necesita 'asin' o una 'url' https" % nombre)
     host = urlsplit(url).netloc.lower()
+    if t.get("pccomtracker"):
+        pct = t["pccomtracker"]
+        if not pct.startswith("https://pccomtracker.com/producto/"):
+            raise ValueError("'pccomtracker' de %s debe ser una ficha https://pccomtracker.com/producto/..." % nombre)
+        return Tienda(nombre, "pccomtracker", "%s:%s" % (re.sub(r"\W+", "", nombre.lower()), _referencia(url)),
+                      url, {"pccomtracker": pct})
     for dominio, motivo in NO_LEIBLES.items():
         if host.endswith(dominio):
             raise ValueError(motivo)
     lector = t.get("lector") or ("shopify" if re.search(r"/products/[^/]+/?$", urlsplit(url).path) else "jsonld")
-    if lector not in FUENTES or lector == "amazon_ficha":
+    if lector not in FUENTES or lector in ("amazon_ficha", "pccomtracker"):
         raise ValueError("lector no valido para %s: %s" % (nombre, lector))
     clave = "%s:%s" % (re.sub(r"\W+", "", nombre.lower()), t.get("variant_id") or _referencia(url))
     extra = {"variant_id": str(t["variant_id"])} if t.get("variant_id") else {}

@@ -6,6 +6,8 @@ Tres lectores, todos con peticiones normales a fichas publicas:
 - jsonld: cualquier tienda que publique el producto en datos estructurados
   schema.org (JSON-LD), como Powerplanet o MediaMarkt. Es el formato que las
   tiendas ponen para buscadores. Una peticion HTTP, sin navegador.
+- pccomtracker: PcComponentes, leida en la ficha publica de pccomtracker.com
+  (ver terceros.py), porque PcComponentes no deja leer sus fichas al bot.
 - shopify: tiendas Shopify (p. ej. la oficial de Dreame), con el JSON publico
   del producto (/products/<handle>.js).
 
@@ -25,11 +27,11 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
-from . import amazon
+from . import amazon, terceros
 from .fuentes import UA
 from .modelo import Observacion, Tienda, a_centimos, ahora_utc
 
-LECTORES = ("amazon_ficha", "jsonld", "shopify")
+LECTORES = ("amazon_ficha", "jsonld", "shopify", "pccomtracker")
 DESAFIO = re.compile(r"Just a moment|cf-chl|challenge-platform|Verify you are human|/errors/validateCaptcha")
 DISPONIBLE = ("InStock", "LimitedAvailability", "OnlineOnly", "InStoreOnly")
 
@@ -160,6 +162,8 @@ def leer(t: Tienda, ean: str | None = None) -> Observacion:
         return amazon.leer(t.clave)
     if t.lector == "jsonld":
         return analizar_jsonld(_descargar(t.url), t, ean)
+    if t.lector == "pccomtracker":
+        return terceros.leer_pccomtracker(t)
     if t.lector == "shopify":
         return analizar_shopify(_descargar(_url_shopify(t.url), "application/json"), t, ean)
     raise ErrorTienda("Lector desconocido: %s" % t.lector)

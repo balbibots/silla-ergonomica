@@ -13,10 +13,11 @@ from pathlib import Path
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "x")
 os.environ.setdefault("TELEGRAM_CHAT_ID", "1")
 
-from vigilante import amazon, config, descubrimiento, fuentes, historial_amazon, notificadores, reglas, seguimiento, tiendas  # noqa: E402
+from vigilante import (amazon, config, descubrimiento, fuentes, historial_amazon, notificadores,  # noqa: E402
+                       reglas, seguimiento, terceros, tiendas)
 from vigilante.almacen import Almacen  # noqa: E402
 from vigilante.modelo import (Observacion, Producto, a_centimos, asin_desde, eur,  # noqa: E402
-                              hora_madrid)
+                              hora_madrid, iso)
 from vigilante.tarjeta import LIMITE_CAPTION, Tarjeta, a_discord, a_telegram, boton_telegram  # noqa: E402
 
 ASIN = "B0DJ82JKFL"
@@ -458,12 +459,13 @@ class Configuracion(unittest.TestCase):
         ruta = tmp / "config.json"
         ruta.write_text(json.dumps(v1), encoding="utf-8")
         cfg = config.cargar(ruta)
-        self.assertEqual(cfg["version"], 6)
+        self.assertEqual(cfg["version"], config.VERSION)
         self.assertEqual(cfg["seguimiento"]["intervalo_min_por_fuente"]["amazon_ficha"], 120)
         g20 = cfg["productos"][0]
         self.assertEqual((g20["id"], g20["nombre"], g20["precio_objetivo"]), (ASIN, "Mi G20", 120.0),
                          "tu G20 conserva nombre y objetivo")
-        self.assertEqual([t["tienda"] for t in g20["tiendas"]], ["Amazon", "Powerplanet", "MediaMarkt"])
+        self.assertEqual([t["tienda"] for t in g20["tiendas"]], ["Amazon", "Powerplanet", "MediaMarkt",
+                                                                 "PcComponentes"])
         self.assertEqual([p["id"] for p in cfg["productos"][1:]], ["dreame-u20", "dreame-r20-se-a"])
         self.assertEqual(cfg["descubrimiento"]["categorias"], ["Electrónica"], "tus ajustes se conservan")
         self.assertTrue(cfg["descubrimiento"]["activo"])
@@ -705,16 +707,16 @@ class Tiendas(unittest.TestCase):
 
 
 class VariasTiendas(unittest.TestCase):
-    """La G20 en Amazon, Powerplanet y MediaMarkt: cuenta el mejor precio con stock."""
+    """La G20 en Amazon, Powerplanet, MediaMarkt y PcComponentes: cuenta el mejor precio con stock."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         os.environ["HISTORY_FILE"] = str(self.tmp / "historico_precios.csv")
         self.a = Almacen(self.tmp / "precios.db")
         self.cfg = configuracion(None)
-        self.cfg["productos"] = [config.ejemplo()["productos"][0]]  # la G20 de ejemplo, 3 tiendas
+        self.cfg["productos"] = [config.ejemplo()["productos"][0]]  # la G20 de ejemplo, 4 tiendas
         self.canal = notificadores.Consola(salida=lambda *_: None)
-        self.precios = {"Amazon": None, "Powerplanet": 15995, "MediaMarkt": 18027}
+        self.precios = {"Amazon": None, "Powerplanet": 15995, "MediaMarkt": 18027, "PcComponentes": 17699}
 
     def lector(self, t, p):
         precio = self.precios[t.nombre]
@@ -747,12 +749,12 @@ class VariasTiendas(unittest.TestCase):
         self.assertEqual(t.referencia_cent, 15995, "antes: el mejor precio anterior, de otra tienda")
         self.assertIn("vendido por Tek4life-ES", t.disponibilidad)
         self.assertTrue(any("Powerplanet 159,95 €" in n and "Amazon sin stock" in n for n in t.notas))
-        self.assertEqual([e[0] for e in t.enlaces], ["PcComponentes (color beige)", "Xiaomi"])
+        self.assertTrue(any("PcComponentes 176,99 €" in n for n in t.notas))
+        self.assertEqual([e[0] for e in t.enlaces], ["Xiaomi"])
         botones = boton_telegram(t)["inline_keyboard"]
         self.assertEqual(botones[0][0]["text"], "🛒 Ver en MediaMarkt")
-        self.assertEqual([b["text"] for b in botones[1]], ["🔗 PcComponentes (color beige)", "🔗 Xiaomi"])
-        self.assertIn("[PcComponentes (color beige)](https://www.pccomponentes.com/",
-                      a_discord(t)["embeds"][0]["description"])
+        self.assertEqual([b["text"] for b in botones[1]], ["🔗 Xiaomi"])
+        self.assertIn("[Xiaomi](https://www.mi.com/", a_discord(t)["embeds"][0]["description"])
 
     def test_leer_una_tienda_mas_cara_no_es_una_bajada(self):
         self.vuelta(0)
@@ -769,18 +771,128 @@ class VariasTiendas(unittest.TestCase):
         sit = {s["tienda"].nombre: s for s in seguimiento.situacion(
             config.productos(self.cfg)[0], self.a, self.cfg["seguimiento"], T0 + timedelta(hours=12))}
         self.assertFalse(sit["Powerplanet"]["reciente"], "una lectura de hace 12 h ya no vale")
-        self.assertEqual(self.a.estado("producto:" + ASIN)["mejor_tienda"], "MediaMarkt")
+        self.assertEqual(self.a.estado("producto:" + ASIN)["mejor_tienda"], "PcComponentes")
         self.assertEqual(self.a.serie("powerplanet:xiaomi-vacuum-cleaner-g20-blanco")[-1][1], 15995,
                          "el fallo no pisa el ultimo precio bueno")
 
     def test_reposicion_en_cualquier_tienda_y_objetivo(self):
-        self.precios.update(Powerplanet=None, MediaMarkt=None)
+        self.precios.update(Powerplanet=None, MediaMarkt=None, PcComponentes=None)
         self.vuelta(0)
         self.precios["MediaMarkt"] = 12400
         self.vuelta(2)
         t = self.canal.enviadas[-1]
         self.assertEqual(t.tipo, "objetivo")
         self.assertIn("📦 Vuelve a haber unidades nuevas", t.notas)
+
+
+PCCOM_G20 = "https://www.pccomponentes.com/xiaomi-vacuum-cleaner-g20-aspiradora-escoba-mano-sin-cable-460w-beige"
+
+
+def pagina_pccomtracker(url=PCCOM_G20, precio="176.99", stock="InStock", modificado="2026-11-01T10:06:58.000Z"):
+    """Recorte con la misma estructura que la ficha real de pccomtracker (21/11/2026)."""
+    prod = {"@context": "https://schema.org", "@type": "Product",
+            "name": "Xiaomi Vacuum Cleaner G20 Aspiradora Escoba/Mano sin Cable 460W Beige",
+            "image": "https://thumb.pccomponentes.com/w-530-530/g20.jpg", "dateModified": modificado,
+            "offers": {"@type": "AggregateOffer", "lowPrice": precio, "highPrice": precio, "priceCurrency": "EUR",
+                       "offerCount": 1, "offers": [{"@type": "Offer", "name": "PcComponentes", "price": precio,
+                                                    "priceCurrency": "EUR",
+                                                    "availability": "https://schema.org/" + stock, "url": url}]}}
+    faq = {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [
+        {"@type": "Question", "name": "¿Cuál es el precio más bajo del último año de Xiaomi G20?",
+         "acceptedAnswer": {"@type": "Answer", "text": "El precio más bajo registrado de Xiaomi G20 ha sido "
+                                                       "169,99\u00a0€, alcanzado el 2 de noviembre de 2026."}},
+        {"@type": "Question", "name": "¿Es buen momento para comprar Xiaomi G20?",
+         "acceptedAnswer": {"@type": "Answer", "text": "Sí, el precio actual (176,99\u00a0€) está por debajo "
+                                                       "de su precio habitual (179,00\u00a0€)."}}]}
+    return "".join('<script type="application/ld+json">%s</script>' % json.dumps(d, ensure_ascii=False)
+                   for d in (prod, faq))
+
+
+REACO_G20 = ('<script>document.addEventListener("DOMContentLoaded", function() {\n const rawPoints = '
+             '[{"fecha":"2026-10-08","precio":214.99},{"fecha":"2026-11-07","precio":169.99},'
+             '{"fecha":"2026-11-11","precio":179},{"fecha":"2026-11-20","precio":176.99},'
+             '{"fecha":"2026-11-21","precio":176.99}];\n const labels = rawPoints.map(p => {</script>')
+
+
+class Terceros(unittest.TestCase):
+    """PcComponentes via pccomtracker e historicos de reacofertas (formato real del 21/11/2026)."""
+
+    def tienda(self):
+        return config._tienda({"tienda": "PcComponentes", "url": PCCOM_G20,
+                               "pccomtracker": "https://pccomtracker.com/producto/g20-71159"})
+
+    def test_config_pccomponentes(self):
+        t = self.tienda()
+        self.assertEqual((t.lector, t.clave), ("pccomtracker", "pccomponentes:" + PCCOM_G20.rsplit("/", 1)[1]))
+        with self.assertRaises(ValueError):
+            config._tienda({"tienda": "PcComponentes", "url": PCCOM_G20})  # sin pccomtracker no se lee
+        with self.assertRaises(ValueError):
+            config._tienda({"tienda": "PcComponentes", "url": PCCOM_G20, "pccomtracker": "https://otra.web/x"})
+
+    def test_precio_actual(self):
+        o = terceros.analizar_pccomtracker(pagina_pccomtracker(), self.tienda(), ahora=T0)
+        self.assertEqual((o.precio_cent, o.disponible, o.vendedor, o.fuente), (17699, True, "PcComponentes",
+                                                                               "pccomtracker"))
+        agotado = terceros.analizar_pccomtracker(pagina_pccomtracker(stock="OutOfStock"), self.tienda(), ahora=T0)
+        self.assertEqual((agotado.precio_cent, agotado.disponible), (None, False))
+
+    def test_otra_ficha_o_dato_antiguo_no_es_un_precio(self):
+        with self.assertRaisesRegex(terceros.ErrorTercero, "no es la de"):
+            terceros.analizar_pccomtracker(pagina_pccomtracker(url=PCCOM_G20 + "-max"), self.tienda(), ahora=T0)
+        with self.assertRaisesRegex(terceros.ErrorTercero, "no se usa"):
+            terceros.analizar_pccomtracker(pagina_pccomtracker(), self.tienda(), ahora=T0 + timedelta(days=2))
+
+    def test_resumen_del_faq(self):
+        r = terceros.resumen_pccomtracker(pagina_pccomtracker())
+        self.assertEqual((r["minimo_cent"], r["minimo_fecha"].date().isoformat(), r["habitual_cent"]),
+                         (16999, "2026-11-02", 17900))
+
+    def test_serie_reacofertas(self):
+        puntos = terceros.serie_reacofertas(REACO_G20)
+        self.assertEqual(len(puntos), 5)
+        self.assertEqual(min(p for _, p in puntos), 16999)
+        self.assertTrue(terceros.cuadra(puntos, 17699))
+        self.assertFalse(terceros.cuadra(puntos, 12400), "si no cuadra con la tienda, no es su serie")
+        with self.assertRaises(terceros.ErrorTercero):
+            terceros.serie_reacofertas("<html>Tracking y Evolución de Precios</html>")
+        self.assertTrue(terceros.cubre_reacofertas("https://www.powerplanetonline.com/es/x"))
+        self.assertFalse(terceros.cubre_reacofertas("https://es.dreametech.com/products/x"))
+
+    def test_ciclo_guarda_historicos_y_la_tarjeta_los_cita(self):
+        tmp = Path(tempfile.mkdtemp())
+        os.environ["HISTORY_FILE"] = str(tmp / "h.csv")
+        a = Almacen(tmp / "p.db")
+        cfg = configuracion(None)
+        g20 = config.ejemplo()["productos"][0]
+        g20["tiendas"] = [t for t in g20["tiendas"] if t["tienda"] == "PcComponentes"]
+        cfg["productos"] = [g20]
+        canal = notificadores.Consola(salida=lambda *_: None)
+        precio = {"v": 17699}
+        pedidas = []
+
+        def descargar(url):
+            pedidas.append(url)
+            if "reacofertas" in url:
+                return REACO_G20
+            return pagina_pccomtracker(precio="%.2f" % (precio["v"] / 100), modificado=iso(T0))
+
+        def lector(t, p):
+            return terceros.analizar_pccomtracker(descargar(t.extra["pccomtracker"]), t, ahora=T0)
+
+        seguimiento.ciclo(cfg, a, canal, ahora=T0, lector=lector, descargar=descargar)
+        clave = config.productos(cfg)[0].tiendas[0].clave
+        self.assertEqual(a.historial_externo(clave, "reacofertas")[1][1][1], 16999)
+        self.assertEqual(a.historial_externo(clave, "pccomtracker")[1], [(datetime(2026, 11, 2, tzinfo=timezone.utc),
+                                                                          16999)])
+        n = len(pedidas)
+        precio["v"] = 16500
+        seguimiento.ciclo(cfg, a, canal, ahora=T0 + timedelta(hours=1), lector=lector, descargar=descargar)
+        self.assertEqual(len(pedidas), n + 1, "los historicos se refrescan cada 12 h, no en cada lectura")
+        t = canal.enviadas[-1]
+        self.assertEqual((t.tipo, t.precio_cent, t.boton), ("bajada", 16500, "🛒 Ver en PcComponentes"))
+        self.assertIn("pccomtracker", t.fuente)
+        self.assertTrue(any("Mínimo 180 d en PcComponentes según reacofertas: 169,99 €" in x
+                            and "lo iguala o mejora" in x for x in t.notas), t.notas)
 
 
 def chollo(titulo, precio, antes=None, texto="", categoria="Electrónica"):
