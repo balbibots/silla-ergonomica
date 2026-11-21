@@ -13,7 +13,7 @@ from pathlib import Path
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "x")
 os.environ.setdefault("TELEGRAM_CHAT_ID", "1")
 
-from vigilante import amazon, config, descubrimiento, historial_amazon, notificadores, reglas, seguimiento  # noqa: E402
+from vigilante import amazon, config, descubrimiento, fuentes, historial_amazon, notificadores, reglas, seguimiento  # noqa: E402
 from vigilante.almacen import Almacen  # noqa: E402
 from vigilante.modelo import (Observacion, Producto, a_centimos, asin_desde, eur,  # noqa: E402
                               hora_madrid)
@@ -188,7 +188,7 @@ class Reglas(unittest.TestCase):
 
 
 def configuracion(tmp, **cambios):
-    cfg = json.loads(config.EJEMPLO.read_text(encoding="utf-8"))
+    cfg = config.ejemplo()
     cfg["canal"] = "consola"
     cfg["seguimiento"]["pausa_entre_amazon_seg"] = 0
     for k, v in cambios.items():
@@ -424,51 +424,203 @@ class Configuracion(unittest.TestCase):
         for cambio in ({"canal": "email"}, {"productos": [{"asin": "malo", "nombre": "x"}]}):
             with self.assertRaises(config.ErrorConfig):
                 config.validar({**cfg, **cambio})
-        des = dict(cfg["descubrimiento"], activo=True)
+        des = json.loads(json.dumps(cfg["descubrimiento"]))
+        des["fuentes"]["chollomazon"]["activo"] = False
         with self.assertRaises(config.ErrorConfig):
             config.validar({**cfg, "descubrimiento": des})
+        des["fuentes"]["chollomazon"].update(activo=True, intervalo_min=10)
+        with self.assertRaises(config.ErrorConfig, msg="CholloMazon no mas de una vez por hora"):
+            config.validar({**cfg, "descubrimiento": des})
+
+    def test_actualiza_la_configuracion_v1_de_la_pi(self):
+        tmp = Path(tempfile.mkdtemp())
+        v1 = {"canal": "telegram",
+              "seguimiento": {"activo": True, "intervalo_min_por_fuente": {"amazon_ficha": 720, "shopify": 360},
+                              "pausa_entre_amazon_seg": 60,
+                              "reglas": {"bajada_pct": 5, "bajada_eur": 10, "aviso_reposicion": True,
+                                         "avisar_minimos": True, "min_observaciones_minimo": 10,
+                                         "min_dias_minimo": 14, "historial_caducidad_dias": 30},
+                              "avisos_tecnicos": False, "fallos_antes_de_aviso_tecnico": 3},
+              "productos": [{"asin": ASIN, "nombre": "Mi G20", "categoria": "Aspiradoras", "precio_objetivo": 120.0}],
+              "descubrimiento": {"activo": False, "proveedor": "ninguno", "modo_minimo": "externo",
+                                 "intervalo_min": 60, "categorias": ["Electrónica"], "excluir_categorias": [],
+                                 "marcas": [], "palabras_clave": [], "excluir_palabras": [], "precio_min": 25,
+                                 "precio_max": 600, "descuento_min_pct": 20, "ahorro_min_eur": 10,
+                                 "valoracion_min": 4.0, "valoraciones_min": 25, "dias_historial_min": 90,
+                                 "solo_nuevo": True, "max_avisos_ejecucion": 5, "max_avisos_dia": 15,
+                                 "max_candidatos": 100}}
+        ruta = tmp / "config.json"
+        ruta.write_text(json.dumps(v1), encoding="utf-8")
+        cfg = config.cargar(ruta)
+        self.assertEqual(cfg["version"], 2)
+        self.assertEqual(cfg["productos"], v1["productos"], "tus productos no se tocan")
+        self.assertEqual(cfg["descubrimiento"]["categorias"], ["Electrónica"], "tus ajustes se conservan")
+        self.assertTrue(cfg["descubrimiento"]["activo"])
+        self.assertNotIn("proveedor", cfg["descubrimiento"])
+        self.assertEqual(cfg["seguimiento"]["reglas"]["historial_caducidad_dias"], 400)
+        self.assertTrue((tmp / "config.json.v1.bak").exists())
+        self.assertEqual(config.cargar(ruta), cfg, "una segunda carga no cambia nada")
+
+
+CSV_CM = (
+    "titulo,asin,marca,categoria,precio_eur,precio_referencia_eur,descuento_pct,cupon,publicada,termina,comprobada,url\n"
+    '"Auriculares X, con ANC",B0AAAAAAA1,Marca: Sony,Electrónica > Auriculares,59.99,129.99,54,,'
+    "%(pub)s,,%(comp)s,https://chollomazon.com/oferta/a\n"
+    "Sartenes,B0AAAAAAA2,BRA,Hogar > Cocina,55.90,85.50,35,,%(pub)s,,%(comp)s,https://chollomazon.com/oferta/b\n"
+    "Camiseta,B0AAAAAAA3,,Moda,15.00,30.00,50,,%(pub)s,,%(comp)s,https://chollomazon.com/oferta/c\n"
+    "Antiguo,B0AAAAAAA4,,Electrónica,40.00,90.00,56,,2026-03-01T10:00:00.000Z,,2026-03-01T10:00:00.000Z,https://x\n"
+    "Sin referencia,B0AAAAAAA5,,Electrónica,40.00,,0,,%(pub)s,,%(comp)s,https://x\n"
+)
+
+
+class FuenteFalsa:
+    nombre = "chollomazon"
+    atribucion = fuentes.CHOLLOMAZON_ATRIBUCION
+
+    def __init__(self):
+        self.lote = []
+        self.error = None
+
+    def candidatos(self):
+        if self.error:
+            raise self.error
+        return list(self.lote)
+
+
+def lectura_amazon(precio=None, valoracion=4.5, num=300, disponible=True, precios=None):
+    """Lector falso de la ficha. Sin precio fijo, devuelve el de la oferta (precios[asin])."""
+    def leer(asin):
+        p = precio if precio is not None else (precios or {}).get(asin, 5999)
+        return Observacion(asin, T0, "amazon_ficha", precio_cent=p if disponible else None,
+                           disponible=disponible, valoracion=valoracion, num_valoraciones=num,
+                           imagen="https://m.media-amazon.com/images/I/x.jpg", vendedor="Amazon")
+    return leer
+
+
+class CholloMazonCSV(unittest.TestCase):
+    def test_parsea_el_formato_real(self):
+        texto = CSV_CM % {"pub": "2026-11-20T10:02:15.274Z", "comp": "2026-11-20T10:02:20.434Z"}
+        c = fuentes.parsear_chollomazon(texto)
+        self.assertEqual(len(c), 5)
+        self.assertEqual((c[0].asin, c[0].precio_cent, c[0].precio_referencia_cent), ("B0AAAAAAA1", 5999, 12999))
+        self.assertEqual((c[0].marca, c[0].titulo), ("Sony", "Auriculares X, con ANC"))
+        self.assertIsNone(c[4].precio_referencia_cent)
+
+    def test_304_y_retry_after(self):
+        a = Almacen(":memory:")
+        with self.assertRaises(fuentes.SinNovedades):
+            fuentes.CholloMazon(a, descargar=lambda: (304, "", {})).candidatos()
+        with self.assertRaises(fuentes.FuenteNoDisponible) as ctx:
+            fuentes.CholloMazon(a, descargar=lambda: (429, "", {"Retry-After": "7200"})).candidatos()
+        self.assertEqual(ctx.exception.reintentar_tras, timedelta(hours=2))
+        f = fuentes.CholloMazon(a, descargar=lambda: (200, CSV_CM % {"pub": "", "comp": ""}, {"ETag": '"v1"'}))
+        f.candidatos()
+        self.assertEqual(a.meta("chollomazon_etag"), '"v1"')
 
 
 class Descubrimiento(unittest.TestCase):
-    def proveedor(self, tmp, n=8):
+    def setUp(self):
+        self.a = Almacen(":memory:")
+        self.cfg = configuracion(None)
+        self.cfg["descubrimiento"]["horario"] = None
+        self.canal = notificadores.Consola(salida=lambda *_: None)
+        self.fuente = FuenteFalsa()
+
+    def lote(self, ahora, **cambios):
+        texto = CSV_CM % {"pub": iso_z(ahora - timedelta(minutes=30)), "comp": iso_z(ahora - timedelta(minutes=20))}
+        lote = fuentes.parsear_chollomazon(texto)
+        for c in lote:
+            for k, v in cambios.get(c.asin, {}).items():
+                setattr(c, k, v)
+        self.fuente.lote = lote
+
+    def ejecutar(self, ahora, leer=None, seguidos=None):
+        if leer is None:  # Amazon confirma el precio de la oferta
+            leer = lectura_amazon(precios={c.asin: c.precio_cent for c in self.fuente.lote})
+        return descubrimiento.ejecutar(self.cfg, self.a, self.canal, [self.fuente], ahora, leer=leer,
+                                       dormir=lambda s: None, seguidos=seguidos)
+
+    def test_primera_descarga_es_linea_base(self):
+        self.lote(T0)
+        self.assertEqual(self.ejecutar(T0), 0)
+        self.lote(T0 + timedelta(hours=1))  # publicadas despues de la linea base
+        self.assertEqual(self.ejecutar(T0 + timedelta(hours=1)), 2)
+        tipos = {t.nombre: t.tipo for t in self.canal.enviadas}
+        self.assertEqual(tipos, {"Auriculares X, con ANC": "oferta", "Sartenes": "oferta"},
+                         "fuera: Moda (categoria), el dato antiguo y el que no tiene referencia")
+        t = self.canal.enviadas[0]
+        self.assertEqual(t.referencia_etiqueta, "Precio de referencia de Amazon")
+        self.assertIn("CholloMazon (CC BY 4.0)", t.fuente)
+        self.assertTrue(any("no frente a un histórico" in n for n in t.notas))
+
+    def test_respeta_el_intervalo_de_la_fuente(self):
+        self.lote(T0)
+        self.ejecutar(T0)
+        self.fuente.error = AssertionError("no deberia descargar otra vez tan pronto")
+        self.ejecutar(T0 + timedelta(minutes=30))
+
+    def test_verificacion_en_amazon(self):
+        self.lote(T0)
+        self.ejecutar(T0)
+        self.lote(T0 + timedelta(hours=1))
+        self.assertEqual(self.ejecutar(T0 + timedelta(hours=1), leer=lectura_amazon(5999, valoracion=3.5)), 0)
+        self.lote(T0 + timedelta(hours=2))
+        self.assertEqual(self.ejecutar(T0 + timedelta(hours=2), leer=lectura_amazon(5999, disponible=False)), 0)
+        filas = self.a.db.execute("SELECT datos FROM candidatos WHERE notificado=0").fetchall()
+        motivos = {json.loads(f["datos"])["motivo"] for f in filas}
+        self.assertIn("sin unidades nuevas en Amazon", motivos)
+        self.assertTrue(any(m.startswith("valoracion") for m in motivos))
+
+    def test_nunca_el_mismo_precio_dos_veces_y_limites(self):
+        self.lote(T0)
+        self.ejecutar(T0)
+        for h in (1, 2, 3):
+            self.lote(T0 + timedelta(hours=h))
+            self.ejecutar(T0 + timedelta(hours=h))
+        self.assertEqual(len(self.canal.enviadas), 2)
+        self.cfg["descubrimiento"]["max_avisos_ejecucion"] = 1
+        self.lote(T0 + timedelta(hours=4), B0AAAAAAA1={"precio_cent": 4999}, B0AAAAAAA2={"precio_cent": 4500})
+        self.assertEqual(self.ejecutar(T0 + timedelta(hours=4)), 1)
+
+    def test_minimo_local(self):
         ahora = T0
-        hist = [((ahora - timedelta(days=i)).isoformat(), 20000) for i in range(1, 366)]
-        cands = [{"asin": "B0000000%02d" % i, "titulo": "Producto %d" % i, "precio_cent": 13000 - i * 100,
-                  "categoria": "Electrónica", "valoracion": 4.5, "num_valoraciones": 100} for i in range(n)]
-        cands.append({"asin": "B0000000XX", "titulo": "Mal valorado", "precio_cent": 9000,
-                      "categoria": "Electrónica", "valoracion": 3.0, "num_valoraciones": 100})
-        cands.append(dict(cands[0]))  # repetido en otra categoria
-        datos = {"candidatos": {"Electrónica": cands[:-1], "Informática": [cands[-1]]},
-                 "historicos": {c["asin"]: {"fuente": "simulada", "puntos": hist, "periodo_dias": 365,
-                                            "diario": True} for c in cands}}
-        (tmp / "sim.json").write_text(json.dumps(datos), encoding="utf-8")
-        return descubrimiento.ProveedorSimulado(tmp / "sim.json")
+        for d in range(0, 40, 4):  # 10 observaciones en 36 dias, siempre a 59,99
+            self.lote(ahora + timedelta(days=d))
+            self.ejecutar(ahora + timedelta(days=d))
+        self.canal.enviadas.clear()
+        fin = ahora + timedelta(days=41)
+        self.lote(fin, B0AAAAAAA1={"precio_cent": 5499, "publicada": T0})
+        self.ejecutar(fin)
+        t = self.canal.enviadas[0]
+        self.assertEqual((t.tipo, t.minimo_anterior_cent), ("minimo_registrado", 5999))
+        self.assertIn("observado por el bot desde", t.minimo_periodo)
 
-    def test_filtros_limites_orden_y_sin_repetir(self):
-        tmp = Path(tempfile.mkdtemp())
-        cfg = configuracion(tmp)
-        cfg["descubrimiento"].update(activo=True, proveedor="simulado", horario=None)
-        a, canal = Almacen(tmp / "p.db"), notificadores.Consola(salida=lambda *_: None)
-        prov = self.proveedor(tmp)
-        self.assertEqual(descubrimiento.ejecutar(cfg, a, canal, prov, T0), 5, "max 5 por ejecucion")
-        self.assertEqual(canal.enviadas[0].nombre, "Producto 7", "el de mas ahorro primero")
-        self.assertEqual(canal.enviadas[0].tipo, "minimo_365")
-        self.assertNotIn("Mal valorado", [t.nombre for t in canal.enviadas])
-        descubrimiento.ejecutar(cfg, a, canal, prov, T0 + timedelta(hours=1))
-        descubrimiento.ejecutar(cfg, a, canal, prov, T0 + timedelta(hours=2))
-        nombres = [t.nombre for t in canal.enviadas]
-        self.assertEqual(len(nombres), len(set(nombres)), "nunca el mismo producto y precio dos veces")
-        self.assertEqual(len(nombres), 8)
+    def test_minimo_externo_con_grafico_importado(self):
+        self.a.importar_historial("B0AAAAAAA2", historial_amazon.FUENTE, T0 - timedelta(days=3),
+                                  [(T0 - timedelta(days=100), 6000), (T0 - timedelta(days=10), 7000)])
+        self.lote(T0, B0AAAAAAA2={"precio_cent": 5590})
+        self.ejecutar(T0)  # linea base: los minimos si se avisan (no son "novedad")
+        self.assertEqual([t.tipo for t in self.canal.enviadas], ["minimo_365"])
 
-    def test_sin_historico_diario_no_hay_media_ni_aviso(self):
-        tmp = Path(tempfile.mkdtemp())
-        cfg = configuracion(tmp)
-        cfg["descubrimiento"].update(activo=True, proveedor="simulado", horario=None)
-        prov = self.proveedor(tmp, 2)
-        for h in prov._hist.values():
-            h.diario = False
-        canal = notificadores.Consola(salida=lambda *_: None)
-        self.assertEqual(descubrimiento.ejecutar(cfg, Almacen(tmp / "p.db"), canal, prov, T0), 0)
+    def test_producto_seguido_rebajado_pide_lectura_extra(self):
+        self.a.registrar(Observacion("B0AAAAAAA2", T0 - timedelta(days=1), "amazon_ficha", precio_cent=7000))
+        self.lote(T0)
+        self.ejecutar(T0, seguidos={"B0AAAAAAA2"})
+        self.assertTrue(self.a.estado("B0AAAAAAA2").get("leer_ya"))
+        cfg = configuracion(None)
+        cfg["productos"] = [{"asin": "B0AAAAAAA2", "nombre": "Sartenes"}]
+        est = self.a.estado("B0AAAAAAA2")
+        est["ultimo_intento"] = (T0 - timedelta(hours=2)).isoformat()
+        self.a.guardar_estado("B0AAAAAAA2", est)
+        leidos = []
+        seguimiento.ciclo(cfg, self.a, self.canal, ahora=T0, dormir=lambda s: None,
+                          lector=lambda p: (leidos.append(p.clave), Observacion(p.clave, T0, "amazon_ficha", precio_cent=5590))[1])
+        self.assertEqual(leidos, ["B0AAAAAAA2"], "se lee aunque no le tocaba por intervalo")
+        self.assertNotIn("leer_ya", self.a.estado("B0AAAAAAA2"))
+
+
+def iso_z(f):
+    return f.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 if __name__ == "__main__":

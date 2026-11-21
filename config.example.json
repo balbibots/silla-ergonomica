@@ -1,4 +1,5 @@
 {
+  "version": 2,
   "canal": "telegram",
   "seguimiento": {
     "activo": true,
@@ -6,6 +7,7 @@
       "amazon_ficha": 720,
       "shopify": 360
     },
+    "lectura_extra_min_entre": 60,
     "pausa_entre_amazon_seg": 60,
     "reglas": {
       "bajada_pct": 5,
@@ -14,7 +16,7 @@
       "avisar_minimos": true,
       "min_observaciones_minimo": 10,
       "min_dias_minimo": 14,
-      "historial_caducidad_dias": 30
+      "historial_caducidad_dias": 400
     },
     "avisos_tecnicos": false,
     "fallos_antes_de_aviso_tecnico": 3
@@ -28,26 +30,41 @@
     }
   ],
   "descubrimiento": {
-    "activo": false,
-    "proveedor": "ninguno",
-    "modo_minimo": "externo",
-    "intervalo_min": 60,
+    "activo": true,
+    "fuentes": {
+      "chollomazon": {
+        "activo": true,
+        "intervalo_min": 60,
+        "max_antiguedad_horas": 48
+      }
+    },
     "horario": {"desde": "08:00", "hasta": "23:00"},
-    "categorias": ["Electrónica", "Informática", "Hogar y cocina"],
+    "categorias": ["Electrónica", "Informática", "Hogar"],
     "excluir_categorias": [],
     "marcas": [],
     "palabras_clave": [],
     "excluir_palabras": [],
     "precio_min": 25,
     "precio_max": 600,
-    "descuento_min_pct": 20,
-    "ahorro_min_eur": 10,
+    "solo_nuevo": true,
+    "avisar": {
+      "ofertas_interesantes": true,
+      "minimo_local": true,
+      "minimo_externo": true
+    },
+    "oferta_interesante": {
+      "descuento_min_pct": 20,
+      "ahorro_min_eur": 10
+    },
+    "minimo_local": {
+      "min_observaciones": 5,
+      "min_dias": 30
+    },
+    "verificar_en_amazon": true,
+    "max_verificaciones_dia": 20,
     "valoracion_min": 4.0,
     "valoraciones_min": 25,
-    "dias_historial_min": 90,
-    "solo_nuevo": true,
     "max_avisos_ejecucion": 5,
-    "max_avisos_dia": 15,
-    "max_candidatos": 100
+    "max_avisos_dia": 15
   }
 }

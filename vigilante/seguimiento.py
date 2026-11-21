@@ -32,6 +32,10 @@ def _toca(p: Producto, est: dict, seg: dict, ahora: datetime) -> bool:
     ultimo = est.get("ultimo_intento")
     if not ultimo:
         return True
+    if est.get("leer_ya"):
+        # Lectura extra: el modo descubrimiento lo ha visto rebajado. Con un
+        # minimo entre lecturas para no convertirlo en una consulta continua.
+        return ahora - desde_iso(ultimo) >= timedelta(minutes=seg["lectura_extra_min_entre"])
     intervalo = seg["intervalo_min_por_fuente"][p.fuente]
     fallos = est.get("fallos", 0)
     if fallos:
@@ -55,6 +59,7 @@ def _csv_compatible(ruta: Path, p: Producto, obs: Observacion) -> None:
     if obs.precio_cent is None:
         return
     nuevo = not ruta.exists()
+    ruta.parent.mkdir(parents=True, exist_ok=True)
     with ruta.open("a", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         if nuevo:
@@ -91,7 +96,8 @@ def tarjeta_para(p: Producto, obs: Observacion, res: reglas.Resultado, serie_pre
     t.disponibilidad = "✅ En stock · Nuevo%s" % vendido
     t.fuente = "Fuente: ficha de Amazon" if p.fuente == "amazon_ficha" else "Fuente: tienda oficial"
     if motivo.tipo == "minimo_365":
-        t.fuente += " e historial de 365 d de Amazon (importado el %s)" % fecha_corta(ext[0])[:10]
+        t.fuente += " e historial de 365 d de Amazon (importado el %s, completado con mis lecturas)" \
+            % fecha_corta(ext[0])[:10]
     if p.fuente == "amazon_ficha":
         t.condiciones.append("Envío no incluido")
     if obs.cupon_cent:
@@ -143,6 +149,7 @@ def ciclo(cfg: dict, almacen: Almacen, notificador, ahora: datetime | None = Non
             primero_amazon = False
 
         est["ultimo_intento"] = iso(ahora_p)
+        est.pop("leer_ya", None)
         try:
             obs = lector(p)
         except Exception as exc:  # noqa: BLE001

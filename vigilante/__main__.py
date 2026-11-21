@@ -18,10 +18,9 @@ import argparse
 import os
 import sys
 import time
-from datetime import timedelta
 from pathlib import Path
 
-from . import config, descubrimiento, historial_amazon, notificadores, seguimiento
+from . import amazon, config, descubrimiento, fuentes, historial_amazon, notificadores, reglas, seguimiento
 from .almacen import Almacen
 from .modelo import ahora_utc, desde_iso, eur, fecha_corta, iso
 
@@ -55,33 +54,39 @@ def migrar(almacen: Almacen, data: Path, silencioso: bool = False) -> None:
         print("Migrado el estado antiguo de %d producto(s)" % n)
 
 
-def _proveedor(cfg: dict):
-    des = cfg["descubrimiento"]
-    if des["proveedor"] == "simulado":
-        return descubrimiento.ProveedorSimulado(os.environ.get("PROVEEDOR_SIMULADO", _data() / "simulado.json"))
-    return None
+def _fuentes(almacen: Almacen) -> list:
+    lista = [fuentes.CholloMazon(almacen)]
+    simulada = os.environ.get("FUENTE_SIMULADA")
+    if simulada:
+        lista.append(fuentes.Simulada(simulada))
+    return lista
+
+
+def _descubrir(cfg: dict, almacen: Almacen, notificador, ahora=None) -> int:
+    seguidos = {p.clave for p in config.productos(cfg)}
+    return descubrimiento.ejecutar(cfg, almacen, notificador, _fuentes(almacen), ahora or ahora_utc(),
+                                   leer=amazon.leer, seguidos=seguidos)
 
 
 def cmd_bucle(_args) -> int:
     cfg = config.cargar()
     notificador = notificadores.crear(cfg["canal"])
     almacen = abrir_almacen()
+    activas = [f for f, a in cfg["descubrimiento"]["fuentes"].items() if a.get("activo")]
     print("Vigilante arrancado. Canal: %s. Productos: %d. Descubrimiento: %s."
           % (notificador.nombre, len(cfg["productos"]),
-             "activo" if cfg["descubrimiento"]["activo"] else "desactivado"))
-    proximo_descubrimiento = ahora_utc()
+             ("activo (%s)" % ", ".join(activas)) if cfg["descubrimiento"]["activo"] else "desactivado"))
     while True:
         try:
             cfg = config.cargar()  # recoge los productos anadidos o quitados sin reiniciar
+            # Primero el descubrimiento: puede pedir una lectura extra de un producto seguido.
+            if cfg["descubrimiento"]["activo"]:
+                try:
+                    _descubrir(cfg, almacen, notificador)
+                except Exception as exc:  # noqa: BLE001 - un modo no tumba al otro
+                    print("Descubrimiento: error: %s: %s" % (type(exc).__name__, exc))
             if cfg["seguimiento"]["activo"]:
                 seguimiento.ciclo(cfg, almacen, notificador)
-            des = cfg["descubrimiento"]
-            if des["activo"] and ahora_utc() >= proximo_descubrimiento:
-                proximo_descubrimiento = ahora_utc() + timedelta(minutes=des["intervalo_min"])
-                try:
-                    descubrimiento.ejecutar(cfg, almacen, notificador, _proveedor(cfg), ahora_utc())
-                except Exception as exc:  # noqa: BLE001 - un modo no tumba al otro
-                    print("Descubrimiento: error: %s" % exc)
         except config.ErrorConfig as exc:
             print("Configuracion no valida, no hago nada hasta que se corrija: %s" % exc)
         except Exception as exc:  # noqa: BLE001
@@ -105,14 +110,16 @@ def cmd_seguimiento(args) -> int:
 
 def cmd_descubrimiento(args) -> int:
     cfg = config.cargar()
-    proveedor = _proveedor(cfg)
-    if proveedor is None:
-        print("El descubrimiento no tiene proveedor configurado (ver README, \"Fuentes y autorizacion\").")
-        return 1
+    cfg["descubrimiento"]["activo"] = True
     almacen = abrir_almacen()
     if args.prueba:
         almacen = almacen.copia_en_memoria()
-    descubrimiento.ejecutar(cfg, almacen, notificadores.crear(cfg["canal"], args.prueba), proveedor, ahora_utc())
+        # En prueba se ignoran la espera entre descargas y la linea base.
+        for f in cfg["descubrimiento"]["fuentes"]:
+            almacen.db.execute("DELETE FROM meta WHERE clave IN (?, ?)", ("proxima_%s" % f, "chollomazon_etag"))
+            if not almacen.meta("inicio_%s" % f):
+                almacen.poner_meta("inicio_%s" % f, "2000-01-01T00:00:00+00:00")
+    _descubrir(cfg, almacen, notificadores.crear(cfg["canal"], args.prueba))
     return 0
 
 
@@ -158,7 +165,13 @@ def cmd_estado(_args) -> int:
             print("  ultimo fallo: %s" % f["error"][:150])
         ext = almacen.historial_externo(p.clave, historial_amazon.FUENTE)
         if ext:
-            print("  historial 365 d importado el %s (%d puntos)" % (fecha_corta(ext[0])[:10], len(ext[1])))
+            lecturas = [desde_iso(r["fecha"]) for r in almacen.db.execute(
+                "SELECT fecha FROM observaciones WHERE clave=? AND fecha>=?", (p.clave, iso(ext[0])))]
+            vigente = reglas.minimo_365(ext, serie, lecturas, ahora_utc(),
+                                        cfg["seguimiento"]["reglas"]["historial_caducidad_dias"]) is not None
+            print("  historial 365 d importado el %s (%d puntos): %s"
+                  % (fecha_corta(ext[0])[:10], len(ext[1]),
+                     "vigente" if vigente else "NO vigente (huecos de lectura o caducado): reimportar"))
         if est.get("aviso_pendiente"):
             print("  hay un aviso pendiente de enviar")
     return 0

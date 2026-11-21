@@ -13,14 +13,17 @@ from datetime import datetime
 from .modelo import eur, fecha_corta
 
 # tipo -> (emoji, encabezado, color del borde en Discord)
+# Tres niveles que nunca se mezclan: 🏆 minimo historico EXTERNO verificado (el
+# grafico de 365 d de Amazon), 📊 minimo del historico LOCAL (lo que ha visto el
+# bot) y 🔥 oferta interesante (descuento frente a una referencia, sin historico).
 TIPOS = {
-    "minimo_365": ("🏆", "Nuevo mínimo de 365 días", 0xF1C40F),
-    "minimo_registrado": ("🏆", "Nuevo mínimo registrado", 0xF1C40F),
-    "minimo_igualado": ("🔁", "Vuelve a su mínimo registrado", 0x3498DB),
+    "minimo_365": ("🏆", "Mínimo histórico verificado · 365 días", 0xF1C40F),
+    "minimo_registrado": ("📊", "Mínimo del histórico local", 0x3498DB),
+    "minimo_igualado": ("🔁", "Vuelve a su mínimo del histórico local", 0x5DADE2),
     "objetivo": ("🎯", "Precio objetivo alcanzado", 0x2ECC71),
     "bajada": ("📉", "Bajada de precio", 0x27AE60),
     "reposicion": ("📦", "De nuevo en stock", 0x9B59B6),
-    "oferta": ("🔥", "Oferta destacada", 0xE67E22),
+    "oferta": ("🔥", "Oferta interesante", 0xE67E22),
     "aviso_tecnico": ("⚠️", "No puedo leer el precio", 0xE74C3C),
 }
 
