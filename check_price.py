@@ -352,8 +352,27 @@ _PATRON_CUPON_AMAZON = re.compile(
 )
 
 
+# Opciones de compra que ofrece la ficha, en un JSON de la propia pagina:
+# {"buyingOptionTypes":["USED"],"zipCode":"...","countryCode":"ES","productAsin":"B0DJ82JKFL"}
+# Si no esta "NEW", Amazon no vende el producto nuevo (solo "Amazon Segunda mano").
+_PATRON_OPCIONES_AMAZON = re.compile(
+    r'"buyingOptionTypes":\[([^\]]*)\][^}]*?"productAsin":"([A-Z0-9]{10})"'
+)
+# Precio de esa oferta de segunda mano: BuyingOptionData(buyingOptionType=USED, price=137,75&nbsp;€
+_PATRON_USADO_AMAZON = re.compile(r"buyingOptionType=USED, price=([\d.,]+)")
+
+
 class ErrorCaptcha(RuntimeError):
     """Amazon ha servido su pagina de CAPTCHA en lugar de la ficha."""
+
+
+class SinStockNuevo(RuntimeError):
+    """La ficha carga bien, pero Amazon solo vende el producto de segunda mano.
+    No es un fallo: se avisa como "agotado"."""
+
+    def __init__(self, precio_usado: float | None):
+        super().__init__("Amazon no tiene unidades nuevas (solo de segunda mano)")
+        self.precio_usado = precio_usado
 
 
 def _precio_es(texto: str) -> float:
@@ -397,6 +416,16 @@ def _es_captcha_amazon(html: str) -> bool:
     return "validateCaptcha" in html or "api-services-support@amazon.com" in html
 
 
+def _solo_usado_amazon(html: str, asin: str | None) -> bool:
+    """True si la ficha de ESTE asin solo ofrece compra de segunda mano."""
+    for m in _PATRON_OPCIONES_AMAZON.finditer(html):
+        if asin and m.group(2) != asin:
+            continue
+        opciones = re.findall(r'"(\w+)"', m.group(1))
+        return bool(opciones) and "NEW" not in opciones
+    return False
+
+
 def _asin(url: str) -> str | None:
     m = re.search(r"/dp/([A-Z0-9]{10})", url)
     return m.group(1) if m else None
@@ -405,6 +434,11 @@ def _asin(url: str) -> str | None:
 def _precio_o_error_amazon(html: str, asin: str | None = None) -> float:
     """Devuelve el precio del HTML o lanza el error MAS ESPECIFICO posible
     (captcha / pagina sin precio), para que el aviso explique la causa real."""
+    # Antes que el precio: sin oferta nueva, el precio que se viera seria el
+    # de segunda mano, y no es el que seguimos.
+    if _solo_usado_amazon(html, asin):
+        m = _PATRON_USADO_AMAZON.search(html)
+        raise SinStockNuevo(_precio_es(m.group(1)) if m else None)
     precio = _extraer_precio_amazon(html)
     if precio is not None:
         if precio <= 0:
@@ -461,7 +495,8 @@ def fetch_amazon_navegador(producto: dict) -> tuple:
                 html = pagina.content()
             except Exception:  # noqa: BLE001 - navegacion en curso
                 html = ""
-            if _extraer_precio_amazon(html) is not None or _es_captcha_amazon(html):
+            if (_extraer_precio_amazon(html) is not None or _es_captcha_amazon(html)
+                    or _solo_usado_amazon(html, _asin(producto["url"]))):
                 break
             if time.monotonic() >= limite:
                 break
@@ -474,9 +509,9 @@ def fetch_amazon(producto: dict) -> tuple:
     """Elige el metodo segun AMAZON_MODO: "navegador", "http", o "auto" (por
     defecto: navegador si Playwright esta instalado, si no HTTP).
 
-    No se comprueba disponibilidad de forma fiable aqui (a diferencia de
-    Shopify): sin precio puede ser agotado, CAPTCHA o cambio de la pagina. Se
-    trata siempre como un error, nunca como "agotado".
+    "Agotado" solo se da cuando la ficha dice expresamente que no hay oferta
+    nueva (SinStockNuevo). Cualquier otra pagina sin precio (CAPTCHA, cambio
+    de diseno...) se trata como un error.
     """
     modo = _modo(AMAZON_MODO)
     print("  Amazon: leyendo con %s" % ("navegador real (Chromium)" if modo == "navegador" else "peticion HTTP"))
@@ -606,8 +641,8 @@ def fetch_con_reintento(fetcher, producto: dict) -> tuple:
             return fetcher(producto)
         except Exception as exc:  # noqa: BLE001
             ultimo_error = exc
-            if intento >= REINTENTOS:
-                break
+            if intento >= REINTENTOS or isinstance(exc, SinStockNuevo):
+                break  # sin stock nuevo no es un fallo puntual: no se reintenta
 
             espera = ESPERA_ENTRE_REINTENTOS_SEG
             if isinstance(exc, ErrorCaptcha):
@@ -777,6 +812,29 @@ def resumen_historial(producto: dict, precio: float, ahora: datetime | None = No
     return lineas
 
 
+def sin_stock_nuevo(estado_producto: dict, producto: dict, precio_usado: float | None) -> str | None:
+    """Amazon solo lo vende de segunda mano. Se avisa una vez; cuando vuelva
+    a haber unidades nuevas, procesar_producto avisa de que hay stock."""
+    usado = " | de 2a mano: %.2f EUR" % precio_usado if precio_usado else ""
+    print("[%s] sin unidades nuevas en Amazon%s" % (_etiqueta(producto), usado))
+    estado_producto.pop("last_error_notified_at", None)
+    estado_producto.pop("consecutive_failures", None)
+    estado_producto["last_checked_at"] = datetime.now(timezone.utc).isoformat()
+    if estado_producto.get("last_available") is False:
+        return None  # ya avisado
+    estado_producto["last_available"] = False
+
+    lineas = ["<b>Amazon se ha quedado sin unidades nuevas</b>"]
+    if precio_usado:
+        lineas.append("♻️ De 2ª mano (Amazon Segunda mano): %s" % _eur(precio_usado))
+    asin = _asin(producto["url"])
+    if asin:
+        lineas.append('<a href="https://www.amazon.es/gp/offer-listing/%s">Ver otros vendedores</a>'
+                      % asin)
+    lineas.append("<i>Te aviso cuando vuelva a haberlas.</i>")
+    return _bloque(producto, "🛑", lineas)
+
+
 def procesar_producto(producto: dict, estado_producto: dict) -> str | None:
     """Comprueba un producto, actualiza su estado y devuelve el bloque del
     mensaje de Telegram con sus novedades (None si no hay nada que contar)."""
@@ -784,6 +842,8 @@ def procesar_producto(producto: dict, estado_producto: dict) -> str | None:
 
     try:
         precio, disponible, titulo, *extra = fetch_con_reintento(fetcher, producto)
+    except SinStockNuevo as exc:
+        return sin_stock_nuevo(estado_producto, producto, exc.precio_usado)
     except Exception as exc:  # noqa: BLE001
         return handle_error(estado_producto, producto, "%s: %s" % (type(exc).__name__, exc))
     detalle = extra[0] if extra else {}
@@ -812,8 +872,9 @@ def procesar_producto(producto: dict, estado_producto: dict) -> str | None:
         return "💰 %s → <b>%s</b>  (%s%s)" % (_eur(anterior_precio), _eur(precio),
                                             "+" if dif > 0 else "−", _eur(abs(dif)))
 
-    # Stock (solo Shopify: Amazon no lo detecta de forma fiable)
-    if producto["tipo"] == "shopify" and anterior_disponible is not None and disponible != anterior_disponible:
+    # Stock. En Amazon solo se marca agotado en sin_stock_nuevo, asi que aqui
+    # solo puede llegar la vuelta del stock.
+    if anterior_disponible is not None and disponible != anterior_disponible:
         emoji = "🟢" if disponible else "🛑"
         lineas.append("<b>¡Vuelve a haber stock!</b>" if disponible else "<b>Se ha agotado</b>")
 
@@ -881,6 +942,8 @@ def comprobar_heartbeat(estado: dict, hubo_eventos: bool) -> None:
         lineas = ["💰 <b>%s</b>" % _eur(precio) if precio is not None else "<i>Sin datos todavía</i>"]
         if ep.get("last_coupon"):
             lineas.append("🎟️ Con cupón de %s" % _h(ep["last_coupon"]))
+        if p["tipo"] == "amazon" and ep.get("last_available") is False:
+            lineas.append("🛑 Ahora sin unidades nuevas en Amazon (precio de la última vez)")
         if precio is not None:
             # En el resumen semanal, solo la valoracion (la 3a linea), para
             # que no se haga largo.

@@ -216,7 +216,7 @@ Ver producto
 
 Los emojis de cabecera dicen qué ha pasado de un vistazo: 🔥 por debajo de tu
 aviso, 📉/📈 bajada/subida, ↗️ vuelve a subir por encima del aviso, 🟢/🛑 vuelve
-el stock / se agota (solo tienda oficial), ⚠️ no se ha podido leer. El
+el stock / se agota, ⚠️ no se ha podido leer. El
 resumen semanal ("📡 Sigo vigilando") usa la misma disposición. Si algún día
 hay tantos productos que no cabe en un mensaje de Telegram, se parte por
 categorías.
@@ -267,7 +267,8 @@ Ver producto  ·  Historial
 |---|---|
 | Un precio baja de su umbral | ✅ Una vez, hasta que vuelva a subir |
 | Un precio cambia (sube o baja) SIN cruzar el umbral | ✅ Con `NOTIFY_ON_ANY_CHANGE` (activado por defecto) — es el modo "seguimiento general": te enteras de cualquier movimiento de precio, no solo de las rebajas |
-| Sihoo se agota / vuelve a haber stock | ✅ (solo Sihoo — Amazon no lo detecta, ver arriba) |
+| Sihoo se agota / vuelve a haber stock | ✅ |
+| Amazon se queda sin unidades nuevas (solo vende de 2ª mano) / vuelve a tenerlas | ✅ Una vez cada cosa, con el precio de 2ª mano y un enlace a otros vendedores. No cuenta como fallo |
 | En Amazon aparece o desaparece un cupón | ✅ Como cambio de precio (el precio vigilado es el final, con cupón) |
 | Ha pasado una semana sin ningún aviso | ✅ Un único mensaje con el precio actual de **todos** los productos |
 | Un producto falla al leer el precio | ✅ Solo si lleva **3 comprobaciones seguidas** fallando; después, máximo 1 vez / 24 h y **solo del que falla** |
