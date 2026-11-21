@@ -37,7 +37,8 @@ from pathlib import Path
 
 from . import config, historial_amazon, reglas, terceros, tiendas
 from .almacen import Almacen
-from .modelo import OFERTA_DESTACADA, Observacion, Producto, Tienda, ahora_utc, desde_iso, eur, fecha_corta, iso
+from .modelo import (OFERTA_DESTACADA, Observacion, Producto, Tienda, ahora_utc, desde_iso, eur, fecha_corta,
+                     hora_madrid, iso)
 from .tarjeta import Tarjeta
 
 VENTANA_DUPLICADOS = timedelta(hours=24)
@@ -99,6 +100,65 @@ def _historicos_terceros(t: Tienda, obs: Observacion, almacen: Almacen, ahora: d
                                            [(r["minimo_fecha"], r["minimo_cent"])])
         except Exception as exc:  # noqa: BLE001
             print("  [%s] resumen de pccomtracker no disponible: %s" % (t.nombre, exc))
+
+
+def _min_externo(t: Tienda, almacen: Almacen, ahora: datetime):
+    """(minimo, fecha, periodo, fuente) del historico de terceros mas largo y
+    reciente de esta tienda, sin contar los puntos de hoy (que son el precio
+    actual). None si no hay."""
+    for fuente, periodo in ((terceros.PCCOMTRACKER, "del año"), (terceros.REACOFERTAS, "de 6 meses")):
+        ext = almacen.historial_externo(t.clave, fuente)
+        if not ext or ahora - ext[0] > TERCEROS_VIGENCIA:
+            continue
+        hoy = hora_madrid(ahora).date()
+        puntos = [(f, p) for f, p in ext[1] if f.date() < hoy]
+        if puntos:
+            f, m = min(puntos, key=lambda x: (x[1], x[0]))
+            return m, f, periodo, fuente
+    return None
+
+
+def veredicto(p: Producto, t_best: Tienda, precio: int, serie_previa, almacen: Almacen, ahora: datetime,
+              motivo: reglas.Motivo, min_dias: float) -> tuple[str | None, str | None]:
+    """UNA linea que dice que tal esta el precio frente a su historia, con la
+    mejor evidencia disponible, y la fuente de esa historia (para el pie)."""
+    if motivo.tipo == "minimo_365":
+        return "🏆 Mínimo de 365 días en Amazon (antes %s)" % eur(motivo.datos["minimo_anterior"]), \
+            "historial de Amazon"
+    ext = _min_externo(t_best, almacen, ahora)
+    if ext:
+        m, f, periodo, fuente = ext
+        donde = " en %s" % t_best.nombre if len(p.tiendas) > 1 else ""
+        if precio < m:
+            return "🏆 Nuevo mínimo %s%s (antes %s el %s)" % (periodo, donde, eur(m), f.strftime("%d/%m")), fuente
+        if precio == m:
+            return "🏆 Iguala su mínimo %s%s (%s)" % (periodo, donde, f.strftime("%d/%m")), fuente
+        return "📊 Su mínimo %s%s: %s (%s)" % (periodo, donde, eur(m), f.strftime("%d/%m")), fuente
+    if serie_previa and (serie_previa[-1][0] - serie_previa[0][0]).days >= min_dias:
+        f, m = min(serie_previa, key=lambda x: (x[1], x[0]))
+        desde = serie_previa[0][0].strftime("%d/%m")
+        if precio < m:
+            return "🏆 Lo más barato que he visto desde el %s (antes %s)" % (desde, eur(m)), None
+        if precio == m:
+            return "🔁 Igual que lo más barato que he visto desde el %s" % desde, None
+        return "📊 Lo más barato que he visto: %s (%s)" % (eur(m), f.strftime("%d/%m")), None
+    return None, None
+
+
+def _otras(sit: list[dict], excepto: Tienda) -> str | None:
+    otras = []
+    for s in sit:
+        if s["tienda"] is excepto:
+            continue
+        if s["disponible"]:
+            otras.append("%s %s" % (s["tienda"].nombre, eur(s["precio"])))
+        elif s["reciente"]:
+            otras.append("%s sin stock" % s["tienda"].nombre)
+    return "🏬 " + " · ".join(otras) if otras else None
+
+
+def _fuente_corta(t: Tienda) -> str:
+    return "vía pccomtracker" if t.lector == "pccomtracker" else "ficha de %s" % t.nombre
 
 
 def referencias_terceros(t: Tienda, almacen: Almacen, precio: int | None, ahora: datetime) -> list[str]:
@@ -164,61 +224,39 @@ def _serie_producto(almacen: Almacen, p: Producto, hasta: datetime) -> list[tupl
 
 
 def tarjeta_para(p: Producto, mejor: dict, sit: list[dict], obs: Observacion, res: reglas.Resultado,
-                 serie_previa, anterior, ext, refs: list[str] | None = None) -> Tarjeta:
+                 serie_previa, anterior, almacen: Almacen, ahora: datetime, min_dias: float = 14) -> Tarjeta:
     motivo = res.principal
     t_best: Tienda = mejor["tienda"]
     fila = mejor["fila"]
     t = Tarjeta(tipo=motivo.tipo, nombre=p.nombre, url=t_best.url, comprobado=obs.fecha,
                 precio_cent=obs.precio_cent, categoria=p.categoria, imagen=obs.imagen,
                 asin=t_best.clave if t_best.lector == "amazon_ficha" else None,
-                boton="🛒 Ver en %s" % t_best.nombre)
+                boton="🛒 Ver en %s" % t_best.nombre, tienda=t_best.nombre)
+    if fila["vendedor"] and fila["vendedor"] != t_best.nombre:
+        t.vendedor = fila["vendedor"]
 
     if res.media_90_cent and res.media_90_cent > obs.precio_cent:
-        t.referencia_cent, t.referencia_etiqueta = res.media_90_cent, "Media 90 d"
+        t.referencia_cent, t.referencia_etiqueta = res.media_90_cent, "media 90 d"
     elif anterior and anterior > obs.precio_cent:
-        t.referencia_cent, t.referencia_etiqueta = anterior, "Antes"
+        t.referencia_cent, t.referencia_etiqueta = anterior, "antes"
+    elif anterior and anterior < obs.precio_cent:
+        t.cambio = "antes %s (+%s)" % (eur(anterior), eur(obs.precio_cent - anterior))
 
-    if motivo.tipo == "minimo_365":
-        t.minimo_anterior_cent, t.minimo_periodo = motivo.datos["minimo_anterior"], "365 d"
-    elif serie_previa:
-        desde = motivo.datos.get("desde") or serie_previa[0][0]
-        t.minimo_anterior_cent = motivo.datos.get("minimo_anterior") or min(x for _, x in serie_previa)
-        alcance = " en %d tiendas" % len(p.tiendas) if len(p.tiendas) > 1 else ""
-        t.minimo_periodo = "registrado%s desde %s" % (alcance, fecha_corta(desde)[:10])
-
-    vendido = ", vendido por %s" % fila["vendedor"] if fila["vendedor"] else ""
-    t.disponibilidad = "✅ En stock · Nuevo en %s%s" % (t_best.nombre, vendido)
-    t.fuente = "Fuente: ficha de %s" % t_best.nombre
-    if t_best.lector == "pccomtracker":
-        t.fuente = "Fuente: precio de %s publicado por pccomtracker.com (puede llevar unas horas)" % t_best.nombre
-    if motivo.tipo == "minimo_365":
-        t.fuente += " e historial de 365 d de Amazon (importado el %s, completado con mis lecturas)" \
-            % fecha_corta(ext[0])[:10]
-    t.condiciones.append("Envío no incluido" if t_best.lector == "amazon_ficha" else "Envío según la tienda")
+    t.veredicto, fuente_min = veredicto(p, t_best, obs.precio_cent, serie_previa, almacen, ahora, motivo, min_dias)
+    t.fuente = _fuente_corta(t_best)
+    if fuente_min and fuente_min not in t.fuente:
+        t.fuente += " · mínimo: %s" % fuente_min
+    if t_best.lector == "amazon_ficha":
+        t.condiciones.append("envío aparte")
     if fila["cupon_cent"]:
-        t.condiciones.append("Cupón de %s: márcalo en la ficha" % fila["cupon_texto"])
+        t.condiciones.append("cupón de %s: márcalo en la ficha" % fila["cupon_texto"])
 
-    if motivo.tipo == "subida" and anterior:
-        t.notas.append("📈 Sube desde %s (+%s)" % (eur(anterior), eur(obs.precio_cent - anterior)))
     notas = {
-        "reposicion": "📦 Vuelve a haber unidades nuevas",
-        "bajada": "📉 Baja desde %s" % eur(anterior) if anterior else "",
-        "objetivo": "🎯 Por debajo de tu objetivo de %s" % eur(p.precio_objetivo_cent or 0),
-        "minimo_registrado": "📊 También es el mínimo que he registrado",
-        "minimo_igualado": "🔁 Iguala su mínimo registrado",
+        "reposicion": "📦 Vuelve a haber stock",
+        "objetivo": "🎯 Por debajo de tu objetivo (%s)" % eur(p.precio_objetivo_cent or 0),
     }
     t.notas += [notas[m.tipo] for m in res.motivos[1:] if notas.get(m.tipo)]
-    t.notas += refs or []
-    otras = []
-    for s in sit:
-        if s["tienda"] is t_best:
-            continue
-        if s["disponible"]:
-            otras.append("%s %s" % (s["tienda"].nombre, eur(s["precio"])))
-        elif s["reciente"]:
-            otras.append("%s sin stock" % s["tienda"].nombre)
-    if otras:
-        t.notas.append("🏬 Otras tiendas: " + " · ".join(otras))
+    t.otras = _otras(sit, t_best)
     t.enlaces = [(nombre if not nota else "%s (%s)" % (nombre, nota), url) for nombre, url, nota in p.enlaces]
     return t
 
@@ -274,22 +312,25 @@ def tarjeta_cambios(p: Producto, cambios: list[dict], sit: list[dict], mejor: di
     t0: Tienda = c0["tienda"]
     est = almacen.estado(t0.clave)
     t = Tarjeta(tipo="cambio_tienda", nombre=p.nombre, url=t0.url, comprobado=ahora,
-                precio_cent=c0["ahora"]["precio"], categoria=p.categoria,
+                precio_cent=c0["ahora"]["precio"], categoria=p.categoria, tienda=t0.nombre,
                 imagen=est.get("imagen") or next((almacen.estado(x.clave).get("imagen") for x in p.tiendas
                                                   if almacen.estado(x.clave).get("imagen")), None),
                 asin=t0.clave if t0.lector == "amazon_ficha" else None, boton="🛒 Ver en %s" % t0.nombre)
-    antes = c0["antes"]["precio"]
-    if c0["ahora"]["precio"] is not None and antes and antes > c0["ahora"]["precio"]:
-        t.referencia_cent, t.referencia_etiqueta = antes, "Antes en %s" % t0.nombre
-    t.disponibilidad = ("✅ En stock · Nuevo en %s" % t0.nombre if c0["ahora"]["disponible"]
-                        else "❌ Sin unidades nuevas en %s" % t0.nombre)
-    t.notas = [texto_cambio(c) for c in cambios]
-    if mejor:
-        t.notas.append("🏆 Mejor precio ahora: %s en %s" % (eur(mejor["precio"]), mejor["tienda"].nombre))
+    antes, ahora_p = c0["antes"]["precio"], c0["ahora"]["precio"]
+    if ahora_p is None:
+        t.disponibilidad = "❌ %s se queda sin stock%s" % (t0.nombre, " (estaba a %s)" % eur(antes) if antes else "")
+    elif not c0["antes"]["disponible"]:
+        t.disponibilidad = "📦 Vuelve a haber stock en %s" % t0.nombre
+    elif antes > ahora_p:
+        t.referencia_cent, t.referencia_etiqueta = antes, "antes"
     else:
-        t.notas.append("ℹ️ Ninguna tienda tiene unidades nuevas ahora")
-    t.fuente = ("Fuente: precio de %s publicado por pccomtracker.com" % t0.nombre if t0.lector == "pccomtracker"
-                else "Fuente: ficha de %s" % t0.nombre)
+        t.cambio = "antes %s (+%s)" % (eur(antes), eur(ahora_p - antes))
+    t.notas = [texto_cambio(c) for c in cambios[1:]]
+    if mejor and mejor["tienda"] is not t0:
+        t.otras = "🏆 Lo más barato ahora: %s en %s" % (eur(mejor["precio"]), mejor["tienda"].nombre)
+    elif not mejor:
+        t.otras = "ℹ️ Ahora no hay stock en ninguna tienda"
+    t.fuente = _fuente_corta(t0)
     t.enlaces = [(nombre if not nota else "%s (%s)" % (nombre, nota), url) for nombre, url, nota in p.enlaces]
     return t
 
@@ -446,14 +487,13 @@ def _evaluar(p: Producto, clave_p: str, est_p: dict, almacen: Almacen, seg: dict
         p.clave, motivo.tipo, obs.precio_cent, desde=ahora - VENTANA_DUPLICADOS)
     t = None
     if motivo and not repetido:
-        refs = referencias_terceros(mejor["tienda"], almacen, obs.precio_cent, ahora)
-        t = tarjeta_para(p, mejor, sit, obs, res, serie_previa, anterior, ext, refs)
+        t = tarjeta_para(p, mejor, sit, obs, res, serie_previa, anterior, almacen, ahora,
+                         seg["reglas"]["min_dias_minimo"])
         # Los cambios de las demas tiendas van en la misma tarjeta. El de la
-        # mejor tienda ya es el motivo si es una bajada, subida o reposicion.
-        resto = [c for c in cambios if not (c["tienda"] is mejor["tienda"]
-                                           and motivo.tipo in ("bajada", "subida", "reposicion"))]
+        # mejor tienda ya esta en la linea del precio.
+        resto = [c for c in cambios if c["tienda"] is not mejor["tienda"]]
         if resto:
-            t.notas.append("🔄 Cambios: " + " · ".join(texto_cambio(c) for c in resto))
+            t.notas += [texto_cambio(c) for c in resto]
     elif cambios:
         t = tarjeta_cambios(p, cambios, sit, mejor, almacen, ahora)
         motivo = reglas.Motivo("cambio_tienda")

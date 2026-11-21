@@ -10,16 +10,16 @@ import html
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .modelo import eur, fecha_corta
+from .modelo import eur, hora_madrid
 
 # tipo -> (emoji, encabezado, color del borde en Discord)
 # Tres niveles que nunca se mezclan: 🏆 minimo historico EXTERNO verificado (el
 # grafico de 365 d de Amazon), 📊 minimo del historico LOCAL (lo que ha visto el
 # bot) y 🔥 oferta interesante (descuento frente a una referencia, sin historico).
 TIPOS = {
-    "minimo_365": ("🏆", "Mínimo histórico verificado · 365 días", 0xF1C40F),
-    "minimo_registrado": ("📊", "Mínimo del histórico local", 0x3498DB),
-    "minimo_igualado": ("🔁", "Vuelve a su mínimo del histórico local", 0x5DADE2),
+    "minimo_365": ("🏆", "Mínimo de 365 días", 0xF1C40F),
+    "minimo_registrado": ("📊", "Lo más barato que he visto", 0x3498DB),
+    "minimo_igualado": ("🔁", "Vuelve a su mínimo", 0x5DADE2),
     "objetivo": ("🎯", "Precio objetivo alcanzado", 0x2ECC71),
     "bajada": ("📉", "Bajada de precio", 0x27AE60),
     "subida": ("📈", "Subida de precio", 0x95A5A6),
@@ -28,7 +28,7 @@ TIPOS = {
     "visto_comunidad": ("👀", "Tu producto en Chollometro", 0x1ABC9C),
     "reposicion": ("📦", "De nuevo en stock", 0x9B59B6),
     "oferta": ("🔥", "Oferta interesante", 0xE67E22),
-    "interes": ("🛍️", "En tu lista de intereses", 0x16A085),
+    "interes": ("🛍️", "De tu lista", 0x16A085),
     "cambio_tienda": ("🔄", "Cambio en una tienda", 0x7F8C8D),
     "aviso_tecnico": ("⚠️", "No puedo leer el precio", 0xE74C3C),
 }
@@ -54,6 +54,11 @@ class Tarjeta:
     asin: str | None = None
     boton: str = "🛒 Ver en Amazon"
     enlaces: list = field(default_factory=list)  # [(texto, url)]: otras tiendas para mirar
+    tienda: str | None = None        # donde esta ese precio
+    vendedor: str | None = None      # solo si no es la propia tienda (marketplace)
+    cambio: str | None = None        # "antes 176,99 € (+3,00 €)" cuando no hay ahorro
+    veredicto: str | None = None     # UNA linea: que tal esta el precio frente a su historia
+    otras: str | None = None         # "🏬 MediaMarkt 209,00 € · Dreame sin stock"
 
     @property
     def emoji(self) -> str:
@@ -76,29 +81,39 @@ class Tarjeta:
         return dif, round(dif * 100 / self.referencia_cent)
 
     def lineas(self, negrita, tachado) -> list[str]:
-        """Las lineas del cuerpo, con el formato de negrita/tachado del canal."""
+        """Cuerpo compacto, para entenderlo de un vistazo:
+
+        💶 99,00 € en PcComponentes · antes 209,00 € (−110,00 € · −53 %)
+        🏆 Iguala su mínimo del año en PcComponentes (19/11)
+        🏬 MediaMarkt 209,00 € · Dreame sin stock
+        🕘 21/11 21:56 · vía pccomtracker
+
+        La ultima linea es siempre el pie (hora, fuente y condiciones)."""
         l = []
         if self.precio_cent is not None:
             precio = "💶 " + negrita(eur(self.precio_cent))
-            if self.referencia_cent:
-                precio += " | %s: %s" % (self.referencia_etiqueta, tachado(eur(self.referencia_cent)))
+            if self.tienda:
+                precio += " en %s" % self.tienda
+            if self.vendedor:
+                precio += " (vende %s)" % self.vendedor
+            if self.ahorro:
+                etiqueta = (self.referencia_etiqueta + " ") if self.referencia_etiqueta else ""
+                precio += " · %s%s (−%s · −%d %%)" % (etiqueta, tachado(eur(self.referencia_cent)),
+                                                   eur(self.ahorro[0]), self.ahorro[1])
+            elif self.cambio:
+                precio += " · " + self.cambio
             l.append(precio)
-        if self.ahorro:
-            l.append("📉 Ahorro: %s (%d %%)" % (eur(self.ahorro[0]), self.ahorro[1]))
-        l.append("")
-        if self.minimo_anterior_cent is not None:
-            l.append("📊 Mínimo anterior (%s): %s" % (self.minimo_periodo, eur(self.minimo_anterior_cent)))
-        if self.categoria:
-            l.append("🏷 Categoría: %s" % self.categoria)
         if self.disponibilidad:
             l.append(self.disponibilidad)
-        l.append("📅 Comprobado: %s" % fecha_corta(self.comprobado))
+        if self.veredicto:
+            l.append(self.veredicto)
+        elif self.minimo_anterior_cent is not None:
+            l.append("📊 Mínimo anterior (%s): %s" % (self.minimo_periodo, eur(self.minimo_anterior_cent)))
+        if self.otras:
+            l.append(self.otras)
         l.extend(self.notas)
-        pie = " · ".join(x for x in [self.fuente] + self.condiciones if x)
-        if pie:
-            l.append(pie)
-        while l and l[-1] == "":
-            l.pop()
+        l.append(" · ".join(x for x in ["🕘 " + hora_madrid(self.comprobado).strftime("%d/%m %H:%M"),
+                                         self.fuente] + self.condiciones if x))
         return l
 
 
@@ -111,8 +126,7 @@ def _telegram(t: Tarjeta) -> str:
     # Las marcas de formato van como caracteres de control para que el escape
     # de los datos (nombres con "<", "&"...) no las toque.
     cuerpo = [h(x) for x in t.lineas(lambda s: "\x01%s\x02" % s, lambda s: "\x03%s\x04" % s)]
-    texto = "%s <b>%s</b>\n<b>%s</b>\n\n%s" % (t.emoji, h(t.encabezado.upper()), h(t.nombre),
-                                              "\n".join(cuerpo))
+    texto = "%s %s · <b>%s</b>\n\n%s" % (t.emoji, h(t.encabezado), h(t.nombre), "\n".join(cuerpo))
     for marca, etiqueta in (("\x01", "<b>"), ("\x02", "</b>"), ("\x03", "<s>"), ("\x04", "</s>")):
         texto = texto.replace(marca, etiqueta)
     return texto
@@ -124,7 +138,7 @@ def a_telegram(t: Tarjeta) -> str:
     texto = _telegram(t)
     if len(texto) <= LIMITE_CAPTION:
         return texto
-    t = Tarjeta(**{**t.__dict__, "notas": [], "condiciones": t.condiciones[:1]})
+    t = Tarjeta(**{**t.__dict__, "notas": [], "condiciones": t.condiciones[:1], "otras": None})
     texto = _telegram(t)
     if len(texto) > LIMITE_CAPTION:
         sobra = len(texto) - LIMITE_CAPTION + 1
@@ -150,14 +164,14 @@ def a_discord(t: Tarjeta) -> dict:
     webhooks de aplicacion; aqui el titulo enlaza a Amazon y hay un enlace
     visible "🛒 Ver en Amazon"."""
     lineas = t.lineas(lambda s: "**%s**" % s, lambda s: "~~%s~~" % s)
-    pie_txt = lineas.pop() if (t.fuente or t.condiciones) else ""
+    pie_txt = lineas.pop()
     descripcion = "\n".join(lineas) + "\n\n[%s](%s)" % (t.boton, t.url)
     if t.enlaces:
         descripcion += "\n🔗 Mira también: " + " · ".join("[%s](%s)" % (e[0], e[1]) for e in t.enlaces)
     embed = {
         "title": ("%s %s" % (t.emoji, t.encabezado))[:256],
         "url": t.url,
-        "description": ("**%s**\n\n%s" % (t.nombre, descripcion))[:4096],
+        "description": ("**%s**\n%s" % (t.nombre, descripcion))[:4096],
         "color": t.color,
         "timestamp": t.comprobado.isoformat(),
     }
@@ -171,7 +185,7 @@ def a_discord(t: Tarjeta) -> dict:
 # --------------------------------------------------------------------- Consola
 def a_texto(t: Tarjeta) -> str:
     l = t.lineas(lambda s: s, lambda s: "~%s~" % s)
-    partes = ["%s %s" % (t.emoji, t.encabezado.upper()), t.nombre, ""] + l
+    partes = ["%s %s · %s" % (t.emoji, t.encabezado, t.nombre), ""] + l
     partes.append("[%s] %s" % (t.boton, t.url))
     for texto, url in t.enlaces:
         partes.append("[🔗 %s] %s" % (texto, url))

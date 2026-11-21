@@ -250,7 +250,7 @@ class Seguimiento(unittest.TestCase):
         self.precio = [None]
         self.vuelta(13)
         self.assertEqual([t.tipo for t in self.canal.enviadas], ["cambio_tienda"])
-        self.assertIn("❌ Amazon: se queda sin stock (estaba a 145,00 €)", self.canal.enviadas[0].notas)
+        self.assertEqual(self.canal.enviadas[0].disponibilidad, "❌ Amazon se queda sin stock (estaba a 145,00 €)")
         self.vuelta(26)
         self.assertEqual(len(self.canal.enviadas), 1, "sigue agotado: nada nuevo que contar")
         self.assertEqual(len(self.almacen.serie(ASIN)), 1, "sin stock no entra en la serie")
@@ -355,8 +355,9 @@ class Tarjetas(unittest.TestCase):
         txt = a_telegram(self.tarjeta())
         self.assertIn("<b>129,99 €</b>", txt)
         self.assertIn("<s>199,99 €</s>", txt)
-        self.assertIn("Ahorro: 70,00 € (35 %)", txt)
-        self.assertIn("Xiaomi &lt;G20&gt; &amp; co", txt)
+        self.assertIn("(−70,00 € · −35 %)", txt)
+        self.assertIn("· <b>Xiaomi &lt;G20&gt; &amp; co</b>", txt, "evento y producto en la primera linea")
+        self.assertLessEqual(txt.count("\n"), 7, "compacta: se lee de un vistazo")
         self.assertIn("13:00", txt, "hora de Madrid")
 
     def test_telegram_cabe_en_un_caption(self):
@@ -366,7 +367,7 @@ class Tarjetas(unittest.TestCase):
 
     def test_sin_referencia_no_inventa_ahorro(self):
         txt = a_telegram(self.tarjeta(referencia_cent=None))
-        self.assertNotIn("Ahorro", txt)
+        self.assertNotIn("−35 %", txt)
         self.assertNotIn("<s>", txt)
 
     def test_discord_embed(self):
@@ -568,9 +569,8 @@ class Descubrimiento(unittest.TestCase):
         self.assertEqual(tipos, {"Auriculares X, con ANC": "chollo", "Sartenes": "chollo"},
                          "fuera: Moda (categoria), el dato antiguo y el que no tiene referencia")
         t = self.canal.enviadas[0]
-        self.assertEqual(t.referencia_etiqueta, "Precio de referencia de Amazon")
+        self.assertEqual(t.veredicto, "ℹ️ Frente al precio de referencia de Amazon, no a un histórico")
         self.assertIn("CholloMazon (CC BY 4.0)", t.fuente)
-        self.assertTrue(any("no frente a un histórico" in n for n in t.notas))
 
     def test_respeta_el_intervalo_de_la_fuente(self):
         self.lote(T0)
@@ -610,14 +610,14 @@ class Descubrimiento(unittest.TestCase):
         self.ejecutar(fin)
         t = self.canal.enviadas[0]
         self.assertEqual((t.tipo, t.minimo_anterior_cent), ("minimo_registrado", 5999))
-        self.assertIn("observado por el bot desde", t.minimo_periodo)
+        self.assertIn("Lo más barato que he visto (59,99 €, observado por el bot desde", t.veredicto)
 
     def test_error_de_precio_fuera_de_tus_temas_y_de_horario(self):
         self.cfg["descubrimiento"]["horario"] = {"desde": "08:00", "hasta": "09:00"}
         self.lote(T0, B0AAAAAAA3={"precio_referencia_cent": 49900, "precio_cent": 4999})  # Moda, 90 %
         self.ejecutar(T0)
         self.assertEqual([t.tipo for t in self.canal.enviadas], ["error_precio"])
-        self.assertTrue(any("puede ser un error" in n for n in self.canal.enviadas[0].notas))
+        self.assertTrue(any("Puede ser un error" in n for n in self.canal.enviadas[0].notas))
 
     def test_reacondicionado_y_productos_seguidos_fuera(self):
         self.lote(T0, B0AAAAAAA1={"titulo": "Auriculares X (Reacondicionado)"})
@@ -770,9 +770,11 @@ class VariasTiendas(unittest.TestCase):
         self.assertEqual((t.tipo, t.precio_cent, t.boton), ("bajada", 14000, "🛒 Ver en MediaMarkt"))
         self.assertIn("mediamarkt.es", t.url)
         self.assertEqual(t.referencia_cent, 15995, "antes: el mejor precio anterior, de otra tienda")
-        self.assertIn("vendido por Tek4life-ES", t.disponibilidad)
-        self.assertTrue(any("Powerplanet 159,95 €" in n and "Amazon sin stock" in n for n in t.notas))
-        self.assertTrue(any("PcComponentes 176,99 €" in n for n in t.notas))
+        self.assertEqual((t.tienda, t.vendedor), ("MediaMarkt", "Tek4life-ES"))
+        self.assertEqual(t.otras, "🏬 Amazon sin stock · Powerplanet 159,95 € · PcComponentes 176,99 €")
+        self.assertIn("💶 140,00 € en MediaMarkt (vende Tek4life-ES) · antes ~159,95 €~ (−19,95 € · −12 %)",
+                      notificadores.a_texto(t) if hasattr(notificadores, "a_texto") else
+                      __import__("vigilante.tarjeta", fromlist=["a_texto"]).a_texto(t))
         self.assertEqual([e[0] for e in t.enlaces], ["Xiaomi"])
         botones = boton_telegram(t)["inline_keyboard"]
         self.assertEqual(botones[0][0]["text"], "🛒 Ver en MediaMarkt")
@@ -806,8 +808,8 @@ class VariasTiendas(unittest.TestCase):
         self.vuelta(2)
         t = self.canal.enviadas[-1]
         self.assertEqual((t.tipo, t.precio_cent, t.boton), ("cambio_tienda", 18026, "🛒 Ver en MediaMarkt"))
-        self.assertEqual(t.notas[0], "📉 MediaMarkt: 180,27 € → 180,26 € (−0,01 €)")
-        self.assertIn("🏆 Mejor precio ahora: 159,95 € en Powerplanet", t.notas)
+        self.assertEqual((t.referencia_cent, t.notas), (18027, []))
+        self.assertEqual(t.otras, "🏆 Lo más barato ahora: 159,95 € en Powerplanet")
         self.vuelta(3)
         self.assertEqual(len(self.canal.enviadas), 1, "el mismo precio no se repite")
 
@@ -818,10 +820,9 @@ class VariasTiendas(unittest.TestCase):
         self.assertEqual(len(self.canal.enviadas), 1)
         t = self.canal.enviadas[0]
         self.assertEqual((t.tipo, t.precio_cent), ("bajada", 15994))
-        cambios = next(n for n in t.notas if n.startswith("🔄 Cambios:"))
-        self.assertIn("❌ MediaMarkt: se queda sin stock", cambios)
-        self.assertIn("📈 PcComponentes: 176,99 € → 179,99 € (+3,00 €)", cambios)
-        self.assertNotIn("Powerplanet", cambios, "su cambio ya es el motivo de la tarjeta")
+        self.assertEqual(t.notas, ["❌ MediaMarkt: se queda sin stock (estaba a 180,27 €)",
+                                   "📈 PcComponentes: 176,99 € → 179,99 € (+3,00 €)"],
+                         "el de Powerplanet ya es la linea del precio")
 
     def test_anadir_una_tienda_mas_barata_no_es_una_bajada(self):
         del self.cfg["productos"][0]["tiendas"][3]  # sin PcComponentes
@@ -848,7 +849,8 @@ class VariasTiendas(unittest.TestCase):
         self.vuelta(2)
         t = self.canal.enviadas[-1]
         self.assertEqual(t.tipo, "objetivo")
-        self.assertIn("📦 Vuelve a haber unidades nuevas", t.notas)
+        self.assertIn("📦 Vuelve a haber stock", t.notas)
+        self.assertEqual(len(t.notas), 1, "sin repetir lo mismo")
 
 
 PCCOM_G20 = "https://www.pccomponentes.com/xiaomi-vacuum-cleaner-g20-aspiradora-escoba-mano-sin-cable-460w-beige"
@@ -957,8 +959,27 @@ class Terceros(unittest.TestCase):
         t = canal.enviadas[-1]
         self.assertEqual((t.tipo, t.precio_cent, t.boton), ("bajada", 16500, "🛒 Ver en PcComponentes"))
         self.assertIn("pccomtracker", t.fuente)
-        self.assertTrue(any("Mínimo 180 d en PcComponentes según reacofertas: 169,99 €" in x
-                            and "lo iguala o mejora" in x for x in t.notas), t.notas)
+        self.assertTrue(t.veredicto.startswith("🏆 Nuevo mínimo de 6 meses"), t.veredicto)
+        self.assertIn("mínimo: reacofertas", t.fuente)
+
+    def test_veredicto_en_una_linea(self):
+        a = Almacen(":memory:")
+        p = config.productos({"productos": [config.ejemplo()["productos"][0]]})[0]
+        t = p.tiendas[3]
+        ahora = datetime(2026, 11, 21, 20, 0, tzinfo=timezone.utc)
+        a.importar_historial(t.clave, "reacofertas", ahora, [(datetime(2026, 10, 8, tzinfo=timezone.utc), 21499),
+                                                             (datetime(2026, 11, 7, tzinfo=timezone.utc), 16999),
+                                                             (datetime(2026, 11, 21, tzinfo=timezone.utc), 16500)])
+        v = lambda precio: seguimiento.veredicto(p, t, precio, [], a, ahora, reglas.Motivo("bajada"), 14)
+        self.assertEqual(v(16500), ("🏆 Nuevo mínimo de 6 meses en PcComponentes (antes 169,99 € el 07/11)",
+                                    "reacofertas"), "el punto de hoy es el precio actual: no cuenta")
+        self.assertEqual(v(16999)[0], "🏆 Iguala su mínimo de 6 meses en PcComponentes (07/11)")
+        self.assertEqual(v(17699)[0], "📊 Su mínimo de 6 meses en PcComponentes: 169,99 € (07/11)")
+        a.importar_historial(t.clave, "pccomtracker", ahora, [(datetime(2026, 11, 2, tzinfo=timezone.utc), 16999)])
+        self.assertEqual(v(17699), ("📊 Su mínimo del año en PcComponentes: 169,99 € (02/11)", "pccomtracker"),
+                         "el periodo mas largo manda")
+        self.assertEqual(seguimiento.veredicto(p, p.tiendas[1], 15995, [], a, ahora, reglas.Motivo("bajada"), 14),
+                         (None, None), "sin historia suficiente no se dice nada")
 
 
 def chollo(titulo, precio, antes=None, texto="", categoria="Electrónica"):
@@ -1032,7 +1053,7 @@ class ChollosComunidad(unittest.TestCase):
         t = descubrimiento.tarjeta_chollo(chollo("ERROR DE PRECIO: TV", 4900), "error_precio",
                                           T0 + timedelta(minutes=7), fuentes.CHOLLOMETRO_ATRIBUCION)
         self.assertEqual((t.tipo, t.boton), ("error_precio", "🔥 Ver el chollo"))
-        self.assertIn("hace 7 min", t.disponibilidad)
+        self.assertIn("hace 7 min", t.fuente)
         self.assertIn("🚨", a_telegram(t))
 
 

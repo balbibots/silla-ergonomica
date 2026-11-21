@@ -176,13 +176,12 @@ def clasificar_todo(c: Candidato, des: dict, almacen: Almacen, ahora: datetime,
     h = None
     if es_error(c.precio_cent, ref, des["errores"]) and (des["errores"]["todas_las_categorias"]
                                                          or _categoria_ok(c.categoria, des)):
-        h = Hallazgo(c, "error", ref - c.precio_cent, ref, "Precio de referencia de Amazon")
+        h = Hallazgo(c, "error", ref - c.precio_cent, ref, "ref.")
     if h is None and pasa_filtros(c, des, max_antiguedad, ahora) is None:
         h = clasificar(c, des, almacen, ahora)
     if h is None and interes:
         ahorro, _ = descuento(c.precio_cent, ref)
-        h = Hallazgo(c, "interes", ahorro, ref if ahorro else None,
-                     "Precio de referencia de Amazon" if ahorro else "")
+        h = Hallazgo(c, "interes", ahorro, ref if ahorro else None, "ref." if ahorro else "")
     if h is not None and interes:
         h.interes = interes["nombre"]
     return h
@@ -241,7 +240,7 @@ def clasificar(c: Candidato, des: dict, almacen: Almacen, ahora: datetime) -> Ha
     if avisar["ofertas_interesantes"] and ref and ref > precio:
         ahorro = ref - precio
         if ahorro >= oi["ahorro_min_eur"] * 100 and ahorro * 100 >= oi["descuento_min_pct"] * ref:
-            return Hallazgo(c, "oferta", ahorro, ref, "Precio de referencia de Amazon")
+            return Hallazgo(c, "oferta", ahorro, ref, "ref.")
     return None
 
 
@@ -474,14 +473,14 @@ def _procesar_comunidad(lote, cfg, almacen: Almacen, notificador, ahora, hoy, at
 
 def tarjeta_chollo(c, tipo: str, ahora: datetime, atribucion: str) -> Tarjeta:
     t = Tarjeta(tipo=tipo, nombre=c.titulo, url=c.url, comprobado=ahora, precio_cent=c.precio_cent,
-                referencia_cent=c.precio_antes_cent, referencia_etiqueta="Antes (según la publicación)",
-                categoria=c.categoria, imagen=c.imagen, boton="🔥 Ver el chollo")
+                referencia_cent=c.precio_antes_cent, referencia_etiqueta="antes",
+                categoria=c.categoria, imagen=c.imagen, boton="🔥 Ver el chollo", tienda=c.tienda or None)
     minutos = int((ahora - c.publicada).total_seconds() // 60) if c.publicada else None
-    hace = (" hace %d min" % minutos) if minutos is not None and minutos < 180 else ""
-    t.disponibilidad = "🏬 %s · publicado%s" % (c.tienda or "Tienda sin indicar", hace)
+    if c.precio_antes_cent:
+        t.veredicto = "ℹ️ Precio de antes según la publicación, sin verificar"
     if tipo == "error_precio":
-        t.notas.append("⚡ La comunidad lo marca como error de precio: suelen durar poco")
-    t.fuente = atribucion
+        t.notas.append("⚡ Puede ser un error de precio: suele durar poco")
+    t.fuente = "Chollometro" + (" · publicado hace %d min" % minutos if minutos is not None and minutos < 180 else "")
     return t
 
 
@@ -500,26 +499,27 @@ def tarjeta(h: Hallazgo, ahora: datetime, atribucion: str) -> Tarjeta:
     t = Tarjeta(tipo=TIPO_TARJETA[h.nivel], nombre=c.titulo, url=c.url, comprobado=ahora,
                 precio_cent=c.precio_cent, referencia_cent=h.referencia_cent,
                 referencia_etiqueta=h.referencia_etiqueta, minimo_anterior_cent=h.minimo_cent,
-                minimo_periodo=h.periodo, categoria=c.categoria, imagen=c.imagen, asin=c.asin)
-    if h.verificado:
-        vendido = ", vendido por %s" % c.vendedor if c.vendedor else ""
-        t.disponibilidad = "✅ En stock · Nuevo%s (comprobado en Amazon)" % vendido
-    else:
-        t.disponibilidad = "ℹ️ Sin comprobar en Amazon (según %s)" % c.fuente
-    if c.valoracion:
-        t.notas.append("⭐ %s/5 (%s valoraciones)" % (str(c.valoracion).replace(".", ","),
-                                                       "{:,}".format(c.num_valoraciones or 0).replace(",", ".")))
+                minimo_periodo=h.periodo, categoria=h.interes if h.nivel == "interes" else c.categoria,
+                imagen=c.imagen, asin=c.asin, tienda="Amazon")
+    if h.nivel == "minimo_externo":
+        t.veredicto = "🏆 Por debajo de su mínimo de 365 días (%s)" % eur(h.minimo_cent)
+    elif h.nivel == "minimo_local":
+        t.veredicto = "🏆 Lo más barato que he visto (%s, %s)" % (eur(h.minimo_cent), h.periodo)
+    elif h.referencia_cent:
+        t.veredicto = "ℹ️ Frente al precio de referencia de Amazon, no a un histórico"
+    if h.verificado and c.vendedor and c.vendedor not in ("Amazon", "Amazon.es"):
+        t.vendedor = c.vendedor
+    if not h.verificado:
+        t.disponibilidad = "ℹ️ Sin comprobar en Amazon"
     if h.interes:
-        t.notas.insert(0, "🛍️ De tu lista: %s" % h.interes)
-        if h.nivel == "interes":
-            t.categoria = h.interes
+        t.notas.append("🛍️ De tu lista: %s" % h.interes)
     if h.nivel == "error":
-        t.notas.append("⚡ Descuento del %d %% o más: puede ser un error y durar poco"
-                       % int(h.ahorro_cent * 100 / h.referencia_cent))
-    if h.nivel in ("oferta", "error", "interes") and h.referencia_cent:
-        t.notas.append("ℹ️ Descuento frente al precio de referencia que muestra Amazon, no frente a un histórico")
-    t.fuente = atribucion
-    t.condiciones = ["Envío no incluido"]
+        t.notas.append("⚡ Puede ser un error de precio: suele durar poco")
+    if c.valoracion:
+        t.notas.append("⭐ %s (%s opiniones)" % (str(c.valoracion).replace(".", ","),
+                                                  "{:,}".format(c.num_valoraciones or 0).replace(",", ".")))
+    t.fuente = "CholloMazon (CC BY 4.0)"
+    t.condiciones = ["envío aparte"]
     if c.cupon:
-        t.condiciones.append("Cupón: %s" % c.cupon)
+        t.condiciones.append("cupón: %s" % c.cupon)
     return t

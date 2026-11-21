@@ -356,26 +356,45 @@ La comunidad no verifica precios: la tarjeta lo indica y enlaza la publicación.
 
 ### Formato
 
+Cada tarjeta se lee de un vistazo: qué pasa y con qué producto, el precio con
+su tienda y su diferencia, **una** línea sobre su historia y, si hay más
+tiendas, cómo están. La hora y la fuente van en la última línea.
+
 ```text
-🔥 OFERTA INTERESANTE
-Samsung Galaxy Watch Ultra2 LTE 47mm en gris titanio a gran precio
+📉 Bajada de precio · Dreame U20
 
-💶 449,99 € | Precio de referencia de Amazon: 749,00 € (tachado)
-📉 Ahorro: 299,01 € (40 %)
+💶 99,00 € en PcComponentes · antes 119,00 € (−20,00 € · −17 %)
+🏆 Iguala su mínimo del año en PcComponentes (19/11)
+🏬 Dreame sin stock · MediaMarkt 209,00 €
+🕘 21/11 22:56 · vía pccomtracker
 
-🏷 Categoría: Electrónica > Smartwatch
-✅ En stock · Nuevo, vendido por Amazon (comprobado en Amazon)
-📅 Comprobado: 21/11/2026 17:30
-⭐ 4,6/5 (1.234 valoraciones)
-ℹ️ Descuento frente al precio de referencia que muestra Amazon, no frente a un histórico
-Datos: CholloMazon (CC BY 4.0) · chollomazon.com/datos · Envío no incluido
-
-[🛒 Ver en Amazon]
+[🛒 Ver en PcComponentes]
 ```
 
-(Precio y descuento salen de la prueba con el CSV real del 21/11/2026; la
-valoración y el vendedor son de ejemplo, porque esa prueba se hizo sin
-comprobar en Amazon.)
+```text
+🔄 Cambio en una tienda · Dreame U20
+
+💶 189,99 € en MediaMarkt · antes 209,00 € (−19,01 € · −9 %)
+🏆 Lo más barato ahora: 99,00 € en PcComponentes
+🕘 21/11 23:56 · ficha de MediaMarkt
+```
+
+```text
+🚨 Posible error de precio · Monitor LG UltraGear 27" 4K 144 Hz
+
+💶 49,99 € en PcComponentes · antes 499,99 € (−450,00 € · −90 %)
+ℹ️ Precio de antes según la publicación, sin verificar
+⚡ Puede ser un error de precio: suele durar poco
+🕘 21/11 21:56 · Chollometro · publicado hace 4 min
+```
+
+(Salen del código real con precios de ejemplo; el precio de antes va tachado.)
+
+- La línea de historia usa la mejor evidencia disponible: el mínimo del año
+  (pccomtracker), el de 6 meses (reacofertas) o lo más barato que ha visto el
+  bot si lleva siguiéndolo al menos 14 días. Si no hay nada fiable, no se
+  pone nada.
+- "vende X" solo aparece si el vendedor no es la propia tienda (marketplace).
 
 - **Telegram:** `sendPhoto` con la foto del producto y un botón real «🛒 Ver
   en Amazon».
@@ -443,7 +462,7 @@ En `data/`, en la propia Pi:
 python -m unittest discover -s tests -v
 ```
 
-Son 85 pruebas sin red. Cubren:
+Son 87 pruebas sin red. Cubren:
 
 - **Lectura de la ficha:** producto y variante correctos, precio de oferta
   frente al tachado y las cuotas, decimales con coma, página sin precio,
