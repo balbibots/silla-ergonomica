@@ -187,7 +187,7 @@ def ejecutar(cfg: dict, almacen: Almacen, notificador, fuentes: list, ahora: dat
         return 0
     seguidos = seguidos or set()
 
-    candidatos, atribuciones = [], {}
+    candidatos, comunidad, atribuciones = [], [], {}
     for fuente in fuentes:
         ajustes = des["fuentes"].get(fuente.nombre, {})
         if not ajustes.get("activo"):
@@ -211,13 +211,19 @@ def ejecutar(cfg: dict, almacen: Almacen, notificador, fuentes: list, ahora: dat
             continue
         atribuciones[fuente.nombre] = fuente.atribucion
         max_ant = timedelta(hours=ajustes["max_antiguedad_horas"])
+        if getattr(fuente, "comunidad", False):
+            comunidad.extend((fuente, c, max_ant) for c in lote)
+            print("Descubrimiento: %s trae %d chollos" % (fuente.nombre, len(lote)))
+            continue
         for c in lote:
             _marcar_seguidos(almacen, seguidos, c)
             candidatos.append((c, max_ant))
         print("Descubrimiento: %s trae %d ofertas" % (fuente.nombre, len(lote)))
 
+    hoy = hora_madrid(ahora).replace(hour=0, minute=0, second=0, microsecond=0)
+    enviados = _procesar_comunidad(comunidad, des, almacen, notificador, ahora, hoy, atribuciones)
     if not candidatos:
-        return 0
+        return enviados
     hallazgos, vistos = [], set()
     for c, max_ant in candidatos:
         motivo = pasa_filtros(c, des, max_ant, ahora)
@@ -229,13 +235,12 @@ def ejecutar(cfg: dict, almacen: Almacen, notificador, fuentes: list, ahora: dat
 
     if not _en_horario(des, ahora):
         print("Descubrimiento: %d hallazgos, fuera de horario de avisos" % len(hallazgos))
-        return 0
-    hoy = hora_madrid(ahora).replace(hour=0, minute=0, second=0, microsecond=0)
+        return enviados
     cupo = min(des["max_avisos_ejecucion"], des["max_avisos_dia"] - almacen.avisos_desde(MODO, hoy))
     verificaciones = des["max_verificaciones_dia"] - int(almacen.meta("verificaciones_%s" % hoy.date()) or 0)
 
     hallazgos.sort(key=lambda h: h.puntuacion, reverse=True)
-    enviados, primera_lectura = 0, True
+    primera_lectura, enviados_antes = True, enviados
     for h in hallazgos:
         if almacen.aviso_enviado(h.cand.asin, _evento(h), h.cand.precio_cent):
             continue
@@ -261,8 +266,66 @@ def ejecutar(cfg: dict, almacen: Almacen, notificador, fuentes: list, ahora: dat
         almacen.registrar_aviso(h.cand.asin, _evento(h), h.cand.precio_cent, MODO, notificador.nombre, fecha=ahora)
         almacen.registrar_candidato(h.cand.asin, _resumen(h, "notificado"), notificado=True)
         enviados += 1
-    print("Descubrimiento: %d hallazgos, %d avisos" % (len(hallazgos), enviados))
+    print("Descubrimiento: %d hallazgos, %d avisos" % (len(hallazgos), enviados - enviados_antes))
     return enviados
+
+
+# ------------------------------------------------------- chollos de la comunidad
+def evaluar_chollo(c, des: dict, ahora: datetime, max_ant: timedelta) -> str | None:
+    """'error_precio', 'chollo' o None. Un error de precio es lo que la comunidad
+    marca como tal; un chollo, un descuento >= descuento_min_pct frente al precio
+    anterior que da la propia publicacion."""
+    com = des["comunidad"]
+    texto = c.texto.lower()
+    if c.publicada and ahora - c.publicada > max_ant:
+        return None
+    if any(k.lower() in texto for k in des["excluir_palabras"]):
+        return None
+    if des["palabras_clave"] and not any(k.lower() in texto for k in des["palabras_clave"]):
+        return None
+    if com["tiendas"] and c.tienda.lower() not in [t.lower() for t in com["tiendas"]]:
+        return None
+    if c.precio_cent is not None and c.precio_cent > des["precio_max"] * 100:
+        return None
+    if any(k.lower() in texto for k in com["palabras_error"]):
+        return "error_precio"
+    if c.precio_antes_cent and c.precio_cent is not None:
+        ahorro = c.precio_antes_cent - c.precio_cent
+        if ahorro * 100 >= com["descuento_min_pct"] * c.precio_antes_cent and ahorro >= com["ahorro_min_eur"] * 100:
+            return "chollo"
+    return None
+
+
+def _procesar_comunidad(lote, des, almacen: Almacen, notificador, ahora, hoy, atribuciones) -> int:
+    enviados = 0
+    for fuente, c, max_ant in lote:
+        tipo = evaluar_chollo(c, des, ahora, max_ant)
+        clave = "%s:%s" % (fuente.nombre, c.id)
+        if not tipo or almacen.aviso_enviado(clave, "comunidad_%s" % tipo, c.precio_cent):
+            continue
+        # Un error de precio dura minutos: sale a cualquier hora. Los demas, en horario.
+        if tipo != "error_precio" and not _en_horario(des, ahora):
+            continue
+        if almacen.avisos_desde(MODO, hoy) >= des["max_avisos_dia"] and tipo != "error_precio":
+            continue
+        notificador.enviar(tarjeta_chollo(c, tipo, ahora, atribuciones.get(fuente.nombre, "")))
+        almacen.registrar_aviso(clave, "comunidad_%s" % tipo, c.precio_cent, MODO, notificador.nombre, fecha=ahora)
+        enviados += 1
+        print("  %s: %s (%s)" % (tipo, c.titulo[:70], c.tienda))
+    return enviados
+
+
+def tarjeta_chollo(c, tipo: str, ahora: datetime, atribucion: str) -> Tarjeta:
+    t = Tarjeta(tipo=tipo, nombre=c.titulo, url=c.url, comprobado=ahora, precio_cent=c.precio_cent,
+                referencia_cent=c.precio_antes_cent, referencia_etiqueta="Antes (según la publicación)",
+                categoria=c.categoria, imagen=c.imagen, boton="🔥 Ver el chollo")
+    minutos = int((ahora - c.publicada).total_seconds() // 60) if c.publicada else None
+    hace = (" hace %d min" % minutos) if minutos is not None and minutos < 180 else ""
+    t.disponibilidad = "🏬 %s · publicado%s" % (c.tienda or "Tienda sin indicar", hace)
+    if tipo == "error_precio":
+        t.notas.append("⚡ La comunidad lo marca como error de precio: suelen durar poco")
+    t.fuente = atribucion
+    return t
 
 
 def _resumen(h: Hallazgo, motivo: str) -> dict:
@@ -288,6 +351,8 @@ def tarjeta(h: Hallazgo, ahora: datetime, atribucion: str) -> Tarjeta:
     if c.valoracion:
         t.notas.append("⭐ %s/5 (%s valoraciones)" % (str(c.valoracion).replace(".", ","),
                                                        "{:,}".format(c.num_valoraciones or 0).replace(",", ".")))
+    if h.nivel == "oferta" and h.referencia_cent and h.ahorro_cent * 100 >= 70 * h.referencia_cent:
+        t.tipo = "chollo"
     if h.nivel == "oferta":
         t.notas.append("ℹ️ Descuento frente al precio de referencia que muestra Amazon, no frente a un histórico")
     t.fuente = atribucion

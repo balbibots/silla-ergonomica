@@ -21,8 +21,9 @@ Definiciones (todas sobre una serie comparable: mismo producto, condicion
   caducado y el bot no ha dejado huecos de lectura desde entonces.
 - objetivo: el precio a pagar (con cupon si lo hay) llega al objetivo por
   primera vez; se rearma cuando vuelve a superarlo.
-- bajada: frente a la ultima lectura valida, al menos bajada_pct % O
-  bajada_eur EUR.
+- bajada / subida: con avisar_cambios (por defecto), cualquier movimiento de
+  al menos cambio_min_eur frente al precio anterior, en los dos sentidos. Sin
+  el, solo bajadas de al menos bajada_pct % O bajada_eur EUR.
 - reposicion: vuelve a haber oferta NUEVA tras estar sin ella.
 """
 from __future__ import annotations
@@ -33,7 +34,7 @@ from datetime import datetime, timedelta
 from .modelo import Observacion, Producto
 
 PRIORIDAD = ["minimo_365", "minimo_registrado", "objetivo", "bajada", "minimo_igualado",
-             "reposicion"]
+             "reposicion", "subida"]
 MAX_HUECO_LECTURAS = timedelta(days=2)
 
 
@@ -120,12 +121,17 @@ def evaluar(obs: Observacion, producto: Producto, serie_previa: list[tuple[datet
         previo = serie_previa[-1][1] if serie_previa else None
     else:
         previo = anterior
-    if previo is not None and precio < previo:
-        dif = previo - precio
-        pct = producto.bajada_pct if producto.bajada_pct is not None else reglas["bajada_pct"]
-        eur = producto.bajada_eur if producto.bajada_eur is not None else reglas["bajada_eur"]
-        if dif * 100 >= pct * previo or dif >= eur * 100:
-            motivos.append(Motivo("bajada", {"antes": previo}))
+    if previo is not None and precio != previo:
+        dif = abs(previo - precio)
+        if reglas.get("avisar_cambios"):
+            # Seguimiento de cualquier movimiento: baja o sube al menos cambio_min_eur.
+            relevante = dif >= reglas.get("cambio_min_eur", 1) * 100
+        else:
+            pct = producto.bajada_pct if producto.bajada_pct is not None else reglas["bajada_pct"]
+            eur = producto.bajada_eur if producto.bajada_eur is not None else reglas["bajada_eur"]
+            relevante = precio < previo and (dif * 100 >= pct * previo or dif >= eur * 100)
+        if relevante:
+            motivos.append(Motivo("bajada" if precio < previo else "subida", {"antes": previo}))
 
     min_prev = min(p for _, p in serie_previa) if serie_previa else None
     if reglas.get("avisar_minimos", True) and min_prev is not None:

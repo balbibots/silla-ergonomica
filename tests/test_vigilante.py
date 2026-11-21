@@ -431,6 +431,7 @@ class Configuracion(unittest.TestCase):
                 config.validar({**cfg, **cambio})
         des = json.loads(json.dumps(cfg["descubrimiento"]))
         des["fuentes"]["chollomazon"]["activo"] = False
+        des["fuentes"]["chollometro"]["activo"] = False
         with self.assertRaises(config.ErrorConfig):
             config.validar({**cfg, "descubrimiento": des})
         des["fuentes"]["chollomazon"].update(activo=True, intervalo_min=10)
@@ -457,7 +458,7 @@ class Configuracion(unittest.TestCase):
         ruta = tmp / "config.json"
         ruta.write_text(json.dumps(v1), encoding="utf-8")
         cfg = config.cargar(ruta)
-        self.assertEqual(cfg["version"], 4)
+        self.assertEqual(cfg["version"], 5)
         self.assertEqual(cfg["seguimiento"]["intervalo_min_por_fuente"]["amazon_ficha"], 120)
         g20 = cfg["productos"][0]
         self.assertEqual((g20["id"], g20["nombre"], g20["precio_objetivo"]), (ASIN, "Mi G20", 120.0),
@@ -535,6 +536,9 @@ class Descubrimiento(unittest.TestCase):
         self.a = Almacen(":memory:")
         self.cfg = configuracion(None)
         self.cfg["descubrimiento"]["horario"] = None
+        # Estas pruebas miden la mecanica con el umbral antiguo (20 %, 3 categorias).
+        self.cfg["descubrimiento"]["oferta_interesante"]["descuento_min_pct"] = 20
+        self.cfg["descubrimiento"]["categorias"] = ["Electrónica", "Informática", "Hogar"]
         self.canal = notificadores.Consola(salida=lambda *_: None)
         self.fuente = FuenteFalsa()
 

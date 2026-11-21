@@ -133,6 +133,8 @@ def tarjeta_para(p: Producto, mejor: dict, sit: list[dict], obs: Observacion, re
     if fila["cupon_cent"]:
         t.condiciones.append("Cupón de %s: márcalo en la ficha" % fila["cupon_texto"])
 
+    if motivo.tipo == "subida" and anterior:
+        t.notas.append("📈 Sube desde %s (+%s)" % (eur(anterior), eur(obs.precio_cent - anterior)))
     notas = {
         "reposicion": "📦 Vuelve a haber unidades nuevas",
         "bajada": "📉 Baja desde %s" % eur(anterior) if anterior else "",
@@ -140,7 +142,7 @@ def tarjeta_para(p: Producto, mejor: dict, sit: list[dict], obs: Observacion, re
         "minimo_registrado": "📊 También es el mínimo que he registrado",
         "minimo_igualado": "🔁 Iguala su mínimo registrado",
     }
-    t.notas = [notas[m.tipo] for m in res.motivos[1:] if notas.get(m.tipo)]
+    t.notas += [notas[m.tipo] for m in res.motivos[1:] if notas.get(m.tipo)]
     otras = []
     for s in sit:
         if s["tienda"] is t_best:
@@ -292,8 +294,11 @@ def _evaluar(p: Producto, clave_p: str, est_p: dict, almacen: Almacen, seg: dict
 
     enviados = 0
     motivo = res.principal
-    if motivo and not almacen.aviso_enviado(p.clave, motivo.tipo, obs.precio_cent,
-                                             desde=ahora - VENTANA_DUPLICADOS):
+    # Una bajada o subida solo sale cuando el precio cambia frente al anterior,
+    # asi que no se repite sola; el resto de eventos se protegen 24 h.
+    repetido = motivo is not None and motivo.tipo not in ("bajada", "subida") and almacen.aviso_enviado(
+        p.clave, motivo.tipo, obs.precio_cent, desde=ahora - VENTANA_DUPLICADOS)
+    if motivo and not repetido:
         t = tarjeta_para(p, mejor, sit, obs, res, serie_previa, anterior, ext)
         try:
             notificador.enviar(t)

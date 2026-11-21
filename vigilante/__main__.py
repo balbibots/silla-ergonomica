@@ -55,7 +55,7 @@ def migrar(almacen: Almacen, data: Path, silencioso: bool = False) -> None:
 
 
 def _fuentes(almacen: Almacen) -> list:
-    lista = [fuentes.CholloMazon(almacen)]
+    lista = [fuentes.Chollometro(), fuentes.CholloMazon(almacen)]
     simulada = os.environ.get("FUENTE_SIMULADA")
     if simulada:
         lista.append(fuentes.Simulada(simulada))

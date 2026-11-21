@@ -20,7 +20,7 @@ from .modelo import Producto, Tienda, a_centimos, asin_desde, url_amazon
 
 RAIZ = Path(__file__).resolve().parent.parent
 EJEMPLO = RAIZ / "config.example.json"
-VERSION = 4
+VERSION = 5
 CANALES = ("telegram", "discord", "consola")
 FUENTES = ("amazon_ficha", "jsonld", "shopify")
 # Tiendas que no dejan leer sus fichas de forma automatica (comprobado el
@@ -59,7 +59,8 @@ PRODUCTOS_V4 = [
          {"tienda": "Dreame", "url": "https://es.dreametech.com/products/aspirador-sin-cable-r20-se-a"},
      ]},
 ]
-FUENTES_DESCUBRIMIENTO = ("chollomazon", "simulado")
+FUENTES_DESCUBRIMIENTO = ("chollomazon", "chollometro", "simulado")
+MIN_INTERVALO_FUENTE = {"chollomazon": 60, "chollometro": 5}
 
 
 class ErrorConfig(ValueError):
@@ -124,6 +125,29 @@ def actualizar_esquema(cfg: dict) -> tuple[dict, list[str]]:
                 productos_cfg.append(copy.deepcopy(nuevo))
                 cambios.append("anadida la %s" % nuevo["nombre"])
         cfg["version"] = 4
+    if cfg.get("version", 1) < 5:
+        # v5: el seguimiento avisa de cualquier subida o bajada, y el
+        # descubrimiento busca chollos de verdad (70 % o mas, errores de precio).
+        reglas = cfg.setdefault("seguimiento", {}).setdefault("reglas", {})
+        reglas.setdefault("avisar_cambios", True)
+        reglas.setdefault("cambio_min_eur", 1)
+        cambios.append("el seguimiento avisa de cada bajada o subida de 1 EUR o mas")
+        for p in cfg.get("productos", []):
+            if (p.get("id"), p.get("precio_objetivo")) in (("dreame-u20", 100.0), ("dreame-r20-se-a", 140.0)):
+                p.pop("precio_objetivo")
+                cambios.append("quitado el objetivo por defecto de la %s" % p["nombre"])
+        des = cfg.setdefault("descubrimiento", {})
+        oi = des.setdefault("oferta_interesante", {})
+        if oi.get("descuento_min_pct", 20) < 70:
+            oi["descuento_min_pct"] = 70
+            cambios.append("solo ofertas con 70 % de descuento o mas")
+        if des.get("categorias") == ["Electrónica", "Informática", "Hogar"]:
+            des["categorias"] = []
+        if des.get("precio_min") == 25:
+            des["precio_min"] = 5
+        des.setdefault("fuentes", {}).setdefault("chollometro", copy.deepcopy(ejemplo()["descubrimiento"]["fuentes"]["chollometro"]))
+        cambios.append("anadidos los chollos y errores de precio de Chollometro (cada 5 min)")
+        cfg["version"] = 5
     antes = json.dumps(cfg, sort_keys=True)
     _completar(cfg, ejemplo())
     if json.dumps(cfg, sort_keys=True) != antes:
@@ -215,7 +239,7 @@ def validar(cfg: dict) -> None:
         if nombre not in FUENTES_DESCUBRIMIENTO:
             raise ErrorConfig("descubrimiento.fuentes.%s no existe. Fuentes: %s"
                               % (nombre, ", ".join(FUENTES_DESCUBRIMIENTO)))
-        _num(f, "intervalo_min", "descubrimiento.fuentes.%s" % nombre, 60 if nombre == "chollomazon" else 1)
+        _num(f, "intervalo_min", "descubrimiento.fuentes.%s" % nombre, MIN_INTERVALO_FUENTE.get(nombre, 1))
         _num(f, "max_antiguedad_horas", "descubrimiento.fuentes.%s" % nombre, 1)
     if des.get("activo") and not any(f.get("activo") for f in fuentes.values()):
         raise ErrorConfig("descubrimiento.activo es true pero no hay ninguna fuente activa")
@@ -226,6 +250,14 @@ def validar(cfg: dict) -> None:
     _num(des.get("oferta_interesante"), "ahorro_min_eur", "descubrimiento.oferta_interesante")
     _num(des.get("minimo_local"), "min_observaciones", "descubrimiento.minimo_local", 2)
     _num(des.get("minimo_local"), "min_dias", "descubrimiento.minimo_local", 1)
+    com = des.get("comunidad")
+    if not isinstance(com, dict):
+        raise ErrorConfig("Falta la seccion descubrimiento.comunidad")
+    _num(com, "descuento_min_pct", "descubrimiento.comunidad")
+    _num(com, "ahorro_min_eur", "descubrimiento.comunidad")
+    for k in ("palabras_error", "tiendas"):
+        if not isinstance(com.get(k), list):
+            raise ErrorConfig("descubrimiento.comunidad.%s debe ser una lista" % k)
     if des["precio_min"] > des["precio_max"]:
         raise ErrorConfig("descubrimiento.precio_min es mayor que precio_max")
     for k in ("categorias", "excluir_categorias", "marcas", "palabras_clave", "excluir_palabras"):

@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "canal": "telegram",
   "seguimiento": {
     "activo": true,
@@ -17,7 +17,9 @@
       "avisar_minimos": true,
       "min_observaciones_minimo": 10,
       "min_dias_minimo": 14,
-      "historial_caducidad_dias": 400
+      "historial_caducidad_dias": 400,
+      "avisar_cambios": true,
+      "cambio_min_eur": 1
     },
     "avisos_tecnicos": false,
     "fallos_antes_de_aviso_tecnico": 3
@@ -59,7 +61,6 @@
       "id": "dreame-u20",
       "nombre": "Dreame U20",
       "categoria": "Aspiradoras",
-      "precio_objetivo": 100.0,
       "ean": "6976233670607",
       "tiendas": [
         {
@@ -82,7 +83,6 @@
       "id": "dreame-r20-se-a",
       "nombre": "Dreame R20 SE-A",
       "categoria": "Aspiradoras",
-      "precio_objetivo": 140.0,
       "ean": "6978515257575",
       "tiendas": [
         {
@@ -103,22 +103,23 @@
         "activo": true,
         "intervalo_min": 60,
         "max_antiguedad_horas": 48
+      },
+      "chollometro": {
+        "activo": true,
+        "intervalo_min": 5,
+        "max_antiguedad_horas": 6
       }
     },
     "horario": {
       "desde": "08:00",
       "hasta": "23:00"
     },
-    "categorias": [
-      "Electrónica",
-      "Informática",
-      "Hogar"
-    ],
+    "categorias": [],
     "excluir_categorias": [],
     "marcas": [],
     "palabras_clave": [],
     "excluir_palabras": [],
-    "precio_min": 25,
+    "precio_min": 5,
     "precio_max": 600,
     "solo_nuevo": true,
     "avisar": {
@@ -127,7 +128,7 @@
       "minimo_externo": true
     },
     "oferta_interesante": {
-      "descuento_min_pct": 20,
+      "descuento_min_pct": 70,
       "ahorro_min_eur": 10
     },
     "minimo_local": {
@@ -139,6 +140,22 @@
     "valoracion_min": 4.0,
     "valoraciones_min": 25,
     "max_avisos_ejecucion": 5,
-    "max_avisos_dia": 15
+    "max_avisos_dia": 15,
+    "comunidad": {
+      "palabras_error": [
+        "error de precio",
+        "fallo de precio",
+        "bug de precio",
+        "precio erróneo",
+        "precio erroneo",
+        "error en el precio",
+        "glitch",
+        "preciazo",
+        "precio de risa"
+      ],
+      "descuento_min_pct": 70,
+      "ahorro_min_eur": 10,
+      "tiendas": []
+    }
   }
 }
