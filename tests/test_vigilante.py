@@ -823,6 +823,18 @@ class VariasTiendas(unittest.TestCase):
         self.assertIn("📈 PcComponentes: 176,99 € → 179,99 € (+3,00 €)", cambios)
         self.assertNotIn("Powerplanet", cambios, "su cambio ya es el motivo de la tarjeta")
 
+    def test_anadir_una_tienda_mas_barata_no_es_una_bajada(self):
+        del self.cfg["productos"][0]["tiendas"][3]  # sin PcComponentes
+        self.vuelta(0)
+        self.cfg["productos"] = [config.ejemplo()["productos"][0]]
+        self.precios["PcComponentes"] = 13000  # por encima del objetivo de 125
+        self.vuelta(1)
+        self.assertEqual([t.tipo for t in self.canal.enviadas], [], "ha entrado una tienda, no ha bajado nada")
+        self.assertEqual(self.a.estado("producto:" + ASIN)["mejor_precio_cent"], 13000)
+        self.precios["PcComponentes"] = 12999
+        self.vuelta(2)
+        self.assertEqual([t.tipo for t in self.canal.enviadas], ["bajada"])
+
     def test_un_fallo_no_es_un_cambio_de_stock(self):
         self.vuelta(0)
         self.precios["MediaMarkt"] = tiendas.BloqueoTienda("HTTP 429")

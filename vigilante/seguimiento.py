@@ -425,8 +425,10 @@ def _evaluar(p: Producto, clave_p: str, est_p: dict, almacen: Almacen, seg: dict
     claves_tiendas = sorted(t.clave for t in p.tiendas)
     if est_p.get("tiendas") != claves_tiendas:
         # Primera evaluacion con este conjunto de tiendas: una tienda recien
-        # anadida que ya tenia stock no es una reposicion.
-        res.motivos = [m for m in res.motivos if m.tipo != "reposicion"]
+        # anadida que ya tenia stock no es una reposicion, y si es mas barata
+        # el precio no ha bajado (ha entrado una tienda). Los minimos y el
+        # objetivo si cuentan.
+        res.motivos = [m for m in res.motivos if m.tipo not in ("reposicion", "bajada", "subida")]
     cambios = cambios_por_tienda(sit, almacen) if seg["reglas"].get("avisar_cambios_por_tienda") else []
     est_p = res.estado
     est_p["tiendas"] = claves_tiendas
