@@ -163,7 +163,17 @@ class Chollo:
     texto: str                    # titulo + descripcion, sin HTML
     imagen: str | None = None
     categoria: str | None = None
-    precio_antes_cent: int | None = None   # solo si el texto lo da
+    precio_antes_cent: int | None = None   # solo si el texto lo da (tachado, PVPR, "antes")
+    # Fuentes con historico (pccomtracker, reacofertas): referencia sacada de
+    # precios cobrados de verdad, no de un tachado.
+    fuente: str = "chollometro"
+    es_oferta: bool = True                 # False: sale de un catalogo (categoria o busqueda)
+    ref_hist_cent: int | None = None
+    ref_texto: str = ""
+    minimo_cent: int | None = None
+    minimo_fecha: datetime | None = None
+    minimo_texto: str = ""
+    pagina: str | None = None              # ficha en la web de seguimiento
 
 
 def _precio_texto(t: str) -> int | None:

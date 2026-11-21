@@ -13,8 +13,8 @@ from pathlib import Path
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "x")
 os.environ.setdefault("TELEGRAM_CHAT_ID", "1")
 
-from vigilante import (amazon, config, descubrimiento, fuentes, historial_amazon, notificadores,  # noqa: E402
-                       reglas, seguimiento, terceros, tiendas)
+from vigilante import (amazon, config, descubrimiento, fuentes, fuentes_historico, historial_amazon,  # noqa: E402
+                       notificadores, reglas, seguimiento, terceros, tiendas)
 from vigilante.almacen import Almacen  # noqa: E402
 from vigilante.modelo import (Observacion, Producto, a_centimos, asin_desde, eur,  # noqa: E402
                               hora_madrid, iso)
@@ -258,6 +258,13 @@ class Seguimiento(unittest.TestCase):
         self.vuelta(39)
         self.assertEqual([t.tipo for t in self.canal.enviadas], ["cambio_tienda", "reposicion"])
 
+    def test_cada_transicion_avisa_aunque_el_precio_ya_se_viera(self):
+        self.vuelta(0)
+        for h, precio in ((13, 13000), (26, 14500), (39, 13000), (52, 14500)):
+            self.precio = [precio]
+            self.vuelta(h)
+        self.assertEqual([t.tipo for t in self.canal.enviadas], ["bajada", "subida", "bajada", "subida"])
+
     def test_persistencia_tras_reiniciar(self):
         self.vuelta(0)
         self.precio = [13000]
@@ -436,7 +443,8 @@ class Configuracion(unittest.TestCase):
                 config.validar({**cfg, **cambio})
         des = json.loads(json.dumps(cfg["descubrimiento"]))
         des["fuentes"]["chollomazon"]["activo"] = False
-        des["fuentes"]["chollometro"]["activo"] = False
+        for f in ("chollometro", "pccomtracker", "reacofertas"):
+            des["fuentes"][f]["activo"] = False
         with self.assertRaises(config.ErrorConfig):
             config.validar({**cfg, "descubrimiento": des})
         des["fuentes"]["chollomazon"].update(activo=True, intervalo_min=10)
@@ -547,6 +555,13 @@ class Descubrimiento(unittest.TestCase):
         self.cfg["descubrimiento"]["categorias"] = ["Electrónica", "Informática", "Hogar"]
         self.canal = notificadores.Consola(salida=lambda *_: None)
         self.fuente = FuenteFalsa()
+        # El bot ya lleva mas de un mes viendo estos dos: su precio habitual es real.
+        self.historia({"B0AAAAAAA1": 12999, "B0AAAAAAA2": 8550})
+
+    def historia(self, precios, dias=(40, 30, 20, 10, 5)):
+        for asin, precio in precios.items():
+            for d in dias:
+                self.a.registrar(Observacion(asin, T0 - timedelta(days=d), "amazon_ficha", precio_cent=precio))
 
     def lote(self, ahora, **cambios):
         texto = CSV_CM % {"pub": iso_z(ahora - timedelta(minutes=30)), "comp": iso_z(ahora - timedelta(minutes=20))}
@@ -562,6 +577,11 @@ class Descubrimiento(unittest.TestCase):
         return descubrimiento.ejecutar(self.cfg, self.a, self.canal, [self.fuente], ahora, leer=leer,
                                        dormir=lambda s: None, seguidos=seguidos)
 
+    def test_sin_historico_el_tachado_de_amazon_no_basta(self):
+        self.a = Almacen(":memory:")  # sin historia
+        self.lote(T0)
+        self.assertEqual(self.ejecutar(T0), 0, "54 % frente al precio de referencia de Amazon, pero sin historico")
+
     def test_avisa_ya_de_las_ofertas_activas(self):
         self.lote(T0)
         self.assertEqual(self.ejecutar(T0), 2, "desde la primera descarga, sin esperar")
@@ -569,7 +589,8 @@ class Descubrimiento(unittest.TestCase):
         self.assertEqual(tipos, {"Auriculares X, con ANC": "chollo", "Sartenes": "chollo"},
                          "fuera: Moda (categoria), el dato antiguo y el que no tiene referencia")
         t = self.canal.enviadas[0]
-        self.assertEqual(t.veredicto, "ℹ️ Frente al precio de referencia de Amazon, no a un histórico")
+        self.assertEqual(t.veredicto, "📊 Referencia real: lo que he visto de este producto en los últimos 90 días")
+        self.assertEqual((t.referencia_cent, t.referencia_etiqueta), (12999, "habitual"))
         self.assertIn("CholloMazon (CC BY 4.0)", t.fuente)
 
     def test_respeta_el_intervalo_de_la_fuente(self):
@@ -616,8 +637,30 @@ class Descubrimiento(unittest.TestCase):
         self.cfg["descubrimiento"]["horario"] = {"desde": "08:00", "hasta": "09:00"}
         self.lote(T0, B0AAAAAAA3={"precio_referencia_cent": 49900, "precio_cent": 4999})  # Moda, 90 %
         self.ejecutar(T0)
-        self.assertEqual([t.tipo for t in self.canal.enviadas], ["error_precio"])
-        self.assertTrue(any("Puede ser un error" in n for n in self.canal.enviadas[0].notas))
+        t = self.canal.enviadas[0]
+        self.assertEqual(t.tipo, "error_comprobado", "Amazon confirma precio y stock")
+        self.assertTrue(any(n.startswith("✅ Precio y stock comprobados en Amazon") for n in t.notas))
+
+    def test_error_sin_valoraciones_y_sin_comprobar(self):
+        self.lote(T0, B0AAAAAAA3={"precio_referencia_cent": 49900, "precio_cent": 4999})
+        self.ejecutar(T0, leer=lectura_amazon(4999, valoracion=2.0, num=3))
+        self.assertEqual([t.tipo for t in self.canal.enviadas if "Camiseta" in t.nombre], ["error_comprobado"],
+                         "las valoraciones no se aplican a los errores de precio")
+        self.canal.enviadas.clear()
+
+        def caido(_asin):
+            raise RuntimeError("Amazon no responde")
+        self.lote(T0 + timedelta(hours=1), B0AAAAAAA3={"precio_referencia_cent": 49900, "precio_cent": 3999})
+        self.ejecutar(T0 + timedelta(hours=1), leer=caido)
+        t = next(t for t in self.canal.enviadas if "Camiseta" in t.nombre)
+        self.assertEqual(t.tipo, "error_precio", "no se ha podido comprobar: sale como sospechoso")
+        self.assertTrue(any(n.startswith("⚠️ Sin comprobar") for n in t.notas))
+
+    def test_valoraciones_configurables(self):
+        self.cfg["descubrimiento"]["valoraciones_en"] = []
+        self.lote(T0)
+        self.assertEqual(self.ejecutar(T0, leer=lectura_amazon(5999, valoracion=3.0, num=2)), 1,
+                         "sin exigir valoraciones a los chollazos")
 
     def test_reacondicionado_y_productos_seguidos_fuera(self):
         self.lote(T0, B0AAAAAAA1={"titulo": "Auriculares X (Reacondicionado)"})
@@ -630,7 +673,7 @@ class Descubrimiento(unittest.TestCase):
         self.ejecutar(T0)
         t = next(t for t in self.canal.enviadas if "Cecotec" in t.nombre)
         self.assertEqual((t.tipo, t.categoria), ("interes", "Aspiradoras"))
-        self.assertIn("🛍️ De tu lista: Aspiradoras", t.notas)
+        self.assertTrue(t.nombre.startswith("Aspiradoras · Cecotec"), "el interes va junto al nombre, una vez")
 
     def test_minimo_externo_con_grafico_importado(self):
         self.a.importar_historial("B0AAAAAAA2", historial_amazon.FUENTE, T0 - timedelta(days=3),
@@ -982,9 +1025,10 @@ class Terceros(unittest.TestCase):
                          (None, None), "sin historia suficiente no se dice nada")
 
 
-def chollo(titulo, precio, antes=None, texto="", categoria="Electrónica"):
+def chollo(titulo, precio, antes=None, texto="", categoria="Electrónica", real=None):
     return fuentes.Chollo(id="1", titulo=titulo, tienda="Amazon", precio_cent=precio, url="https://x/1",
-                          publicada=T0, texto=titulo + " " + texto, precio_antes_cent=antes, categoria=categoria)
+                          publicada=T0, texto=titulo + " " + texto, precio_antes_cent=antes, categoria=categoria,
+                          ref_hist_cent=real, ref_texto="precio habitual de prueba")
 
 
 class ChollosComunidad(unittest.TestCase):
@@ -1004,7 +1048,7 @@ class ChollosComunidad(unittest.TestCase):
     def test_solo_tus_temas(self):
         self.assertIsNone(self.ev(chollo("Muñeca", 15000, antes=40000, categoria="Juguetes, familia e hijos")),
                           "62 %: un chollazo, pero no de tus temas")
-        self.assertEqual(self.ev(chollo("Robot aspirador", 24900, antes=69900, categoria="Hogar, vivienda y oficina")),
+        self.assertEqual(self.ev(chollo("Robot aspirador", 24900, real=69900, categoria="Hogar, vivienda y oficina")),
                          "chollo")
 
     def test_errores_de_precio_en_cualquier_categoria(self):
@@ -1037,8 +1081,19 @@ class ChollosComunidad(unittest.TestCase):
                           "en la descripcion no cuenta")
 
     def test_chollazo_de_verdad(self):
-        self.assertEqual(self.ev(chollo("Auriculares Sony WH-1000XM5", 12900, antes=39900)), "chollo")
-        self.assertIsNone(self.ev(chollo("Auriculares Sony WH-1000XM5", 17900, antes=39900)), "55 %: no llega al 60 %")
+        self.assertEqual(self.ev(chollo("Auriculares Sony WH-1000XM5", 12900, real=39900)), "chollo")
+        self.assertIsNone(self.ev(chollo("Auriculares Sony WH-1000XM5", 17900, real=39900)), "55 %: no llega al 60 %")
+
+    def test_un_tachado_o_pvpr_no_basta_para_un_chollazo(self):
+        self.assertIsNone(self.ev(chollo("Auriculares Sony WH-1000XM5", 12900, antes=39900)),
+                          "68 % frente al 'antes' de la publicacion: sin historico no es un chollazo")
+        self.assertEqual(self.ev(chollo("Auriculares Sony WH-1000XM5", 12900, antes=39900, real=21900)), None,
+                         "frente a su precio habitual real solo es un 41 %")
+
+    def test_dato_roto_no_es_un_error_de_precio(self):
+        c = chollo("Corsair Hydro X Rotary Pack 2 Adaptadores", 11664, real=1209879, categoria=None)
+        c.fuente = "reacofertas"
+        self.assertIsNone(self.ev(c), "un 'habitual' de 12.098 EUR en un adaptador es un dato roto")
 
     def test_tus_productos_en_chollometro_sin_confundir_modelos(self):
         prods = config.ejemplo()["productos"]
@@ -1059,3 +1114,94 @@ class ChollosComunidad(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+DATOS = Path(__file__).parent / "datos"
+
+
+def dato(nombre):
+    return (DATOS / nombre).read_text(encoding="utf-8")
+
+
+class FuentesConHistorico(unittest.TestCase):
+    """pccomtracker y reacofertas con recortes de sus paginas reales (21/11/2026)."""
+
+    AHORA = datetime(2026, 11, 21, 20, 0, tzinfo=timezone.utc)
+
+    def test_portada_de_pccomtracker(self):
+        t = fuentes_historico.tarjetas_pccomtracker(dato("pccomtracker_portada.html"))
+        self.assertEqual(len(t), 3)
+        self.assertEqual((t[0]["precio"], t[0]["antes"]), (31008, 62484))
+        self.assertTrue(t[0]["href"].startswith("/producto/cocina-independiente-beko"))
+
+    def test_ficha_de_pccomtracker(self):
+        f = fuentes_historico.ficha_pccomtracker(dato("pccomtracker_ficha_g20.html"))
+        self.assertEqual((f["precio"], f["habitual"], f["minimo"], f["disponible"]), (17699, 17900, 16999, True))
+        self.assertTrue(f["url"].startswith("https://www.pccomponentes.com/xiaomi-vacuum-cleaner-g20"))
+
+    def test_reacofertas_lista_y_ficha(self):
+        t = fuentes_historico.tarjetas_reacofertas(dato("reacofertas_bajadas.html"))
+        self.assertEqual((len(t), t[0]["id"], t[0]["precio"], t[0]["antes"]), (6, "145431", 11664, 1209879))
+        f = fuentes_historico.ficha_reacofertas(dato("reacofertas_ficha_g20.html"))
+        self.assertEqual((f["tienda"], f["precio"], len(f["puntos"])), ("PcComponentes", 17699, 5))
+
+    def test_mediana_diaria(self):
+        d = lambda m, dia: datetime(2026, m, dia, tzinfo=timezone.utc)
+        puntos = [(d(10, 8), 21499), (d(11, 7), 16999), (d(11, 11), 17900), (d(11, 20), 17699)]
+        self.assertEqual(fuentes_historico.mediana_diaria(puntos, self.AHORA), (21499, 44),
+                         "30 de los 44 dias estuvo a 214,99: un pico de un dia no la mueve")
+        self.assertEqual(fuentes_historico.mediana_diaria([(d(11, 20), 100)], self.AHORA), (100, 1))
+
+    def _fuente(self, clase, paginas):
+        cfg = config.ejemplo()
+        a = Almacen(":memory:")
+        pedidas = []
+
+        def descargar(url):
+            pedidas.append(url)
+            for clave, nombre in paginas.items():
+                if clave in url:
+                    return dato(nombre)
+            raise terceros.ErrorTercero("404")
+        return clase(cfg, a, descargar, ahora=self.AHORA), pedidas, cfg
+
+    def test_pccomtracker_con_referencia_real_y_cache(self):
+        f, pedidas, cfg = self._fuente(fuentes_historico.PCComTracker, {
+            "/producto/": "pccomtracker_ficha_g20.html", "/categoria/": "pccomtracker_portada.html",
+            "pccomtracker.com/": "pccomtracker_portada.html"})
+        lote = f.candidatos()
+        self.assertTrue(lote)
+        c = lote[0]
+        self.assertEqual((c.fuente, c.tienda, c.ref_hist_cent, c.minimo_cent), ("pccomtracker", "PcComponentes",
+                                                                               17900, 16999))
+        self.assertTrue(c.url.startswith("https://www.pccomponentes.com/"), "el boton va a la tienda, sin afiliado")
+        n = len(pedidas)
+        f.candidatos()
+        self.assertEqual(len(pedidas) - n, 1 + len(cfg["descubrimiento"]["intereses"][0]["pccomtracker_categorias"]),
+                         "las fichas se recuerdan 6 h: solo se piden las listas")
+
+    def test_reacofertas_sin_afiliados_y_con_mediana(self):
+        f, _, _ = self._fuente(fuentes_historico.Reacofertas, {
+            "?id=": "reacofertas_ficha_g20.html", "tracking-precios": "reacofertas_bajadas.html"})
+        c = f.candidatos()[0]
+        self.assertEqual((c.ref_hist_cent, c.ref_texto), (21499, "mediana de 90 días según reacofertas"))
+        self.assertTrue(c.url.startswith("https://reacofertas.es/tracking-precios?id="))
+        self.assertEqual((c.minimo_cent, c.minimo_fecha.day), (16999, 7))
+
+    def test_catalogo_sin_referencia_real_no_es_interes(self):
+        des = config.ejemplo()["descubrimiento"]
+        c = fuentes.Chollo(id="9", titulo="Aspiradora escoba Adler AD 7036", tienda="PcComponentes", precio_cent=6020,
+                           url="https://x", publicada=self.AHORA, texto="", fuente="reacofertas", es_oferta=False,
+                           precio_antes_cent=7105, minimo_cent=5208)
+        self.assertIsNone(descubrimiento.evaluar_chollo(c, des, self.AHORA, timedelta(hours=48)),
+                          "15 % frente al precio anterior, pero sin historico real: hace una semana estaba a 52 EUR")
+        c.ref_hist_cent = 9341
+        self.assertEqual(descubrimiento.evaluar_chollo(c, des, self.AHORA, timedelta(hours=48)), "interes")
+
+    def test_datos_rotos_de_reacofertas_no_avisan(self):
+        des = config.ejemplo()["descubrimiento"]
+        for x in fuentes_historico.tarjetas_reacofertas(dato("reacofertas_bajadas.html")):
+            c = fuentes.Chollo(id=x["id"], titulo=x["titulo"], tienda="PcComponentes", precio_cent=x["precio"],
+                               url="https://x", publicada=self.AHORA, texto=x["titulo"], fuente="reacofertas",
+                               precio_antes_cent=x["antes"], ref_hist_cent=x["antes"])
+            self.assertIsNone(descubrimiento.evaluar_chollo(c, des, self.AHORA, timedelta(hours=48)), x["titulo"])

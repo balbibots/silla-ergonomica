@@ -481,12 +481,11 @@ def _evaluar(p: Producto, clave_p: str, est_p: dict, almacen: Almacen, seg: dict
 
     enviados = 0
     motivo = res.principal
-    # Una bajada o subida solo sale cuando el precio cambia frente al anterior,
-    # asi que no se repite sola; el resto de eventos se protegen 24 h.
-    repetido = motivo is not None and motivo.tipo not in ("bajada", "subida") and almacen.aviso_enviado(
-        p.clave, motivo.tipo, obs.precio_cent, desde=ahora - VENTANA_DUPLICADOS)
+    # Todos los motivos son TRANSICIONES (cambia el precio, se alcanza el
+    # objetivo, vuelve el stock...) guardadas en el estado, asi que no se
+    # repiten solos y se avisa de cada una aunque ese precio ya se viera antes.
     t = None
-    if motivo and not repetido:
+    if motivo:
         t = tarjeta_para(p, mejor, sit, obs, res, serie_previa, anterior, almacen, ahora,
                          seg["reglas"]["min_dias_minimo"])
         # Los cambios de las demas tiendas van en la misma tarjeta. El de la

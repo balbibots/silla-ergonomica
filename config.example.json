@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "canal": "telegram",
   "seguimiento": {
     "activo": true,
@@ -134,6 +134,20 @@
         "activo": true,
         "intervalo_min": 5,
         "max_antiguedad_horas": 6
+      },
+      "pccomtracker": {
+        "activo": true,
+        "intervalo_min": 60,
+        "max_antiguedad_horas": 26,
+        "max_fichas": 25,
+        "categorias": []
+      },
+      "reacofertas": {
+        "activo": true,
+        "intervalo_min": 180,
+        "max_antiguedad_horas": 48,
+        "max_fichas": 20,
+        "categorias": []
       }
     },
     "horario": {
@@ -222,14 +236,28 @@
         "precio_max": 250,
         "precio_objetivo": 140,
         "descuento_min_pct": 15,
-        "ahorro_min_eur": 10
+        "ahorro_min_eur": 10,
+        "pccomtracker_categorias": [
+          "electrodomesticos/aspiradoras-escoba"
+        ],
+        "reacofertas_busquedas": [
+          "aspiradora escoba",
+          "aspirador sin cable"
+        ]
       }
     ],
     "errores": {
       "descuento_min_pct": 80,
       "ahorro_min_eur": 30,
       "valor_min_eur": 50,
-      "todas_las_categorias": true
-    }
+      "todas_las_categorias": true,
+      "max_referencia_eur": 3000,
+      "max_descuento_pct": 95
+    },
+    "valoraciones_en": [
+      "chollo",
+      "interes",
+      "minimo"
+    ]
   }
 }

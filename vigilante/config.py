@@ -20,7 +20,7 @@ from .modelo import Producto, Tienda, a_centimos, asin_desde, url_amazon
 
 RAIZ = Path(__file__).resolve().parent.parent
 EJEMPLO = RAIZ / "config.example.json"
-VERSION = 8
+VERSION = 9
 CANALES = ("telegram", "discord", "consola")
 FUENTES = ("amazon_ficha", "jsonld", "shopify", "pccomtracker")
 # Tiendas que no dejan leer sus fichas de forma automatica (comprobado el
@@ -90,8 +90,18 @@ INTERESES_V8 = [{
     "descuento_min_pct": 15, "ahorro_min_eur": 10,
 }]
 ERRORES_V8 = {"descuento_min_pct": 80, "ahorro_min_eur": 30, "valor_min_eur": 50, "todas_las_categorias": True}
-FUENTES_DESCUBRIMIENTO = ("chollomazon", "chollometro", "simulado")
-MIN_INTERVALO_FUENTE = {"chollomazon": 60, "chollometro": 5}
+FUENTES_DESCUBRIMIENTO = ("chollomazon", "chollometro", "pccomtracker", "reacofertas", "simulado")
+MIN_INTERVALO_FUENTE = {"chollomazon": 60, "chollometro": 5, "pccomtracker": 30, "reacofertas": 60}
+# v9: descubrimiento con referencias de precios reales.
+FUENTES_V9 = {
+    "pccomtracker": {"activo": True, "intervalo_min": 60, "max_antiguedad_horas": 26, "max_fichas": 25,
+                     "categorias": []},
+    "reacofertas": {"activo": True, "intervalo_min": 180, "max_antiguedad_horas": 48, "max_fichas": 20,
+                    "categorias": []},
+}
+INTERESES_FUENTES_V9 = {"Aspiradoras": {"pccomtracker_categorias": ["electrodomesticos/aspiradoras-escoba"],
+                                        "reacofertas_busquedas": ["aspiradora escoba", "aspirador sin cable"]}}
+NIVELES_VALORACIONES = ("chollo", "interes", "minimo")
 
 
 class ErrorConfig(ValueError):
@@ -245,6 +255,21 @@ def actualizar_esquema(cfg: dict) -> tuple[dict, list[str]]:
         des.setdefault("errores", dict(ERRORES_V8))
         cambios.append("posibles errores de precio desde el 80 %, en cualquier categoria")
         cfg["version"] = 8
+    if cfg.get("version", 1) < 9:
+        des = cfg.setdefault("descubrimiento", {})
+        fu = des.setdefault("fuentes", {})
+        for nombre, ajustes in FUENTES_V9.items():
+            fu.setdefault(nombre, copy.deepcopy(ajustes))
+        cambios.append("descubrimiento tambien con pccomtracker y reacofertas (precios de referencia reales)")
+        for it in des.get("intereses", []):
+            for k, v in INTERESES_FUENTES_V9.get(it.get("nombre"), {}).items():
+                it.setdefault(k, list(v))
+        des.setdefault("valoraciones_en", list(NIVELES_VALORACIONES))
+        des.setdefault("errores", {}).setdefault("max_referencia_eur", 3000)
+        des["errores"].setdefault("max_descuento_pct", 95)
+        cambios.append("los chollazos necesitan un precio de referencia real (historico), no un tachado o PVPR")
+        cambios.append("las valoraciones minimas no se aplican a errores de precio")
+        cfg["version"] = 9
     antes = json.dumps(cfg, sort_keys=True)
     _completar(cfg, ejemplo())
     if json.dumps(cfg, sort_keys=True) != antes:
@@ -352,8 +377,14 @@ def validar(cfg: dict) -> None:
     _num(des.get("minimo_local"), "min_observaciones", "descubrimiento.minimo_local", 2)
     _num(des.get("minimo_local"), "min_dias", "descubrimiento.minimo_local", 1)
     err = des.get("errores")
-    for k in ("descuento_min_pct", "ahorro_min_eur", "valor_min_eur"):
+    for k in ("descuento_min_pct", "ahorro_min_eur", "valor_min_eur", "max_referencia_eur", "max_descuento_pct"):
         _num(err, k, "descubrimiento.errores")
+    ve = des.get("valoraciones_en")
+    if not isinstance(ve, list) or any(x not in NIVELES_VALORACIONES for x in ve):
+        raise ErrorConfig("descubrimiento.valoraciones_en debe ser una lista con %s" % ", ".join(NIVELES_VALORACIONES))
+    for nombre in ("pccomtracker", "reacofertas"):
+        if nombre in fuentes:
+            _num(fuentes[nombre], "max_fichas", "descubrimiento.fuentes.%s" % nombre, 1)
     intereses = des.get("intereses")
     if not isinstance(intereses, list):
         raise ErrorConfig("descubrimiento.intereses debe ser una lista")

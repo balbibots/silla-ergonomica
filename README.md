@@ -21,10 +21,10 @@ logs y a la base de datos.
 
 | Nivel | Qué vigila | Cuándo avisa | Fuentes |
 |---|---|---|---|
-| **1 · Tus productos** | Los productos de `productos`, en cada una de sus tiendas | Cualquier cambio de precio (desde 0,01 €) o de stock **en cada tienda**, aunque no sea la más barata; 📉/📈 cambio del mejor precio, 🎯 objetivo, 📊/🏆 mínimos y 📦 reposición. Todo lo de un ciclo va en **una sola tarjeta** por producto | Fichas de las tiendas (y pccomtracker para PcComponentes). 👀 también si alguien los publica en Chollometro |
-| **2 · 🛍️ Intereses activos** | Lo que buscas ahora (`descubrimiento.intereses`, de inicio: aspiradoras) por palabras del título, con exclusiones (robots, recambios, bolsas…) | Descuento de al menos un 15 % y 10 €, **o** precio por debajo de tu objetivo (140 €), entre 50 y 250 € | CholloMazon y Chollometro, en cualquier categoría |
-| **3 · 💥 Chollazos** | Tus temas (electrónica, informática, gaming, hogar, herramientas) | Descuento real de al menos un **60 % y 30 €** sobre algo que valga 50 € o más. Nada de ofertas comerciales normales | CholloMazon (frente al precio de referencia de Amazon) y Chollometro (frente al precio anterior que da la publicación) |
-| **4 · 🚨 Posibles errores de precio** | **Cualquier categoría** | Descuento del **80 %** o más (sobre algo de 50 € o más, ahorrando 30 €), o la comunidad lo llama "error de precio" en el título. A cualquier hora y sin gastar el cupo diario | CholloMazon y Chollometro |
+| **1 · Tus productos** | Los productos de `productos`, en cada una de sus tiendas | **Cada transición**: cualquier cambio de precio (desde 0,01 €) o de stock en cada tienda, aunque no sea la más barata y aunque ese precio ya se viera antes; 📉/📈 cambio del mejor precio, 🎯 objetivo, 📊/🏆 mínimos y 📦 reposición. Todo lo de un ciclo va en **una sola tarjeta** por producto. Sin filtros de valoraciones | Fichas de las tiendas (y pccomtracker para PcComponentes). 👀 también si alguien los publica en Chollometro |
+| **2 · 🛍️ Intereses activos** | Lo que buscas ahora (`descubrimiento.intereses`, de inicio: aspiradoras) por palabras del título, con exclusiones (robots, recambios, bolsas…) | Descuento de al menos un 15 % y 10 €, **o** precio por debajo de tu objetivo (140 €), entre 50 y 250 €. Lo que sale de un catálogo (una categoría o una búsqueda) necesita siempre descuento frente a una referencia real | CholloMazon, Chollometro y, para tus intereses, las categorías de pccomtracker y las búsquedas de reacofertas |
+| **3 · 💥 Chollazos** | Tus temas | Descuento **real** de al menos un **60 % y 30 €** sobre algo que valga 50 € o más. Real = frente a precios cobrados de verdad: el precio habitual de pccomtracker, la mediana diaria de 90 días de reacofertas o lo que el bot ha visto durante al menos un mes. **Un tachado, un PVPR o el «antes» de una publicación nunca bastan** | pccomtracker, reacofertas y CholloMazon (con historial del bot) |
+| **4 · 🚨 Errores de precio** | **Cualquier categoría** | Descuento del **80 %** o más (sobre algo de 50 € a 3.000 €, ahorrando 30 €, y no más del 95 %, que suele ser un dato roto), o la comunidad lo llama «error de precio» en el título. A cualquier hora y sin gastar el cupo diario. **«Comprobado»** si el bot ha leído ese precio y stock en la ficha de la tienda (hoy, Amazon); si no, **«sin comprobar»** | Las cuatro fuentes |
 
 Reglas comunes:
 
@@ -163,7 +163,10 @@ vuelta y lo valida entero.
 | `seguimiento.reglas.avisar_cambios` / `cambio_min_eur` | `true` / `0.01` | Avisa de cada bajada 📉 y subida 📈 del mejor precio |
 | `seguimiento.reglas.avisar_cambios_por_tienda` | `true` | Avisa también de los cambios de precio y stock de cada tienda, aunque no sea la más barata (🔄) |
 | `descubrimiento.intereses` | Aspiradoras | Lista de intereses activos: `nombre`, `incluir`, `excluir`, `precio_min`, `precio_max`, `precio_objetivo`, `descuento_min_pct`, `ahorro_min_eur`, `activo`. Añade los que quieras |
-| `descubrimiento.errores` | 80 % / 30 € / 50 € / todas las categorías | Nivel 4: `descuento_min_pct`, `ahorro_min_eur`, `valor_min_eur`, `todas_las_categorias` |
+| `descubrimiento.errores` | 80 % / 30 € / 50 € / 3.000 € / 95 % / todas | Nivel 4: `descuento_min_pct`, `ahorro_min_eur`, `valor_min_eur`, `max_referencia_eur`, `max_descuento_pct` (por encima, dato roto), `todas_las_categorias` |
+| `descubrimiento.valoracion_min` / `valoraciones_min` / `valoraciones_en` | 4 / 25 / chollo, interes, minimo | Estrellas y opiniones mínimas en Amazon, y en qué niveles se exigen. Nunca en errores de precio ni en tus productos |
+| `descubrimiento.fuentes.pccomtracker` / `reacofertas` | cada 60 / 180 min, 25 / 20 fichas | Descubrimiento con referencia real. `max_fichas`: fichas nuevas por pasada (cada ficha se recuerda 6 h) |
+| `intereses[].pccomtracker_categorias` / `reacofertas_busquedas` | aspiradoras-escoba / «aspiradora escoba», «aspirador sin cable» | Dónde buscar cada interés en esas webs |
 | `seguimiento.lectura_extra_min_entre` | `60` | Mínimo de minutos entre lecturas extra |
 | `seguimiento.reglas.bajada_pct` / `bajada_eur` | `5` / `10` | Bajada que merece aviso: 5 % **o** 10 € |
 | `seguimiento.reglas.min_observaciones_minimo` / `min_dias_minimo` | `10` / `14` | Historial que hace falta para un mínimo local |
@@ -196,6 +199,17 @@ Los secretos van en `.env` ([`.env.example`](.env.example)), nunca en el
 JSON.
 
 ### Precios e históricos de terceros
+
+**Descubrimiento con referencia real (v9).** Además del seguimiento, el bot
+lee en pccomtracker la portada («Mayores bajadas de hoy», «Mejores ofertas»)
+y las categorías de tus intereses, y en reacofertas su lista de bajadas y sus
+búsquedas. De cada candidato lee su ficha: la referencia es el precio
+habitual de pccomtracker o la **mediana diaria de 90 días** de reacofertas
+(cada día cuenta con el precio que tuvo, así un pico de un día no la mueve).
+Los datos rotos que publican (un adaptador «a 12.098 €», una tapa de objetivo
+«a 1.227 €») se descartan por los topes de referencia y de descuento. Sus
+enlaces de compra son de afiliado: el botón lleva a la ficha de PcComponentes
+(pccomtracker la da) o a la página de reacofertas.
 
 Dos webs españolas siguen PcComponentes (y otras tiendas) a diario y publican
 sus datos en páginas que su robots.txt permite. El bot las usa con peticiones
@@ -462,7 +476,7 @@ En `data/`, en la propia Pi:
 python -m unittest discover -s tests -v
 ```
 
-Son 87 pruebas sin red. Cubren:
+Son 101 pruebas sin red. Cubren:
 
 - **Lectura de la ficha:** producto y variante correctos, precio de oferta
   frente al tachado y las cuotas, decimales con coma, página sin precio,

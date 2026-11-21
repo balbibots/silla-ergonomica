@@ -20,7 +20,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import amazon, config, descubrimiento, fuentes, historial_amazon, notificadores, reglas, seguimiento
+from . import (amazon, config, descubrimiento, fuentes, fuentes_historico, historial_amazon,
+               notificadores, reglas, seguimiento)
 from .almacen import Almacen
 from .modelo import ahora_utc, desde_iso, eur, fecha_corta, iso
 
@@ -54,8 +55,9 @@ def migrar(almacen: Almacen, data: Path, silencioso: bool = False) -> None:
         print("Migrado el estado antiguo de %d producto(s)" % n)
 
 
-def _fuentes(almacen: Almacen) -> list:
-    lista = [fuentes.Chollometro(), fuentes.CholloMazon(almacen)]
+def _fuentes(almacen: Almacen, cfg: dict) -> list:
+    lista = [fuentes.Chollometro(), fuentes.CholloMazon(almacen),
+             fuentes_historico.PCComTracker(cfg, almacen), fuentes_historico.Reacofertas(cfg, almacen)]
     simulada = os.environ.get("FUENTE_SIMULADA")
     if simulada:
         lista.append(fuentes.Simulada(simulada))
@@ -64,7 +66,7 @@ def _fuentes(almacen: Almacen) -> list:
 
 def _descubrir(cfg: dict, almacen: Almacen, notificador, ahora=None) -> int:
     seguidos = {t.clave for p in config.productos(cfg) for t in p.tiendas if t.lector == "amazon_ficha"}
-    return descubrimiento.ejecutar(cfg, almacen, notificador, _fuentes(almacen), ahora or ahora_utc(),
+    return descubrimiento.ejecutar(cfg, almacen, notificador, _fuentes(almacen, cfg), ahora or ahora_utc(),
                                    leer=amazon.leer, seguidos=seguidos)
 
 
