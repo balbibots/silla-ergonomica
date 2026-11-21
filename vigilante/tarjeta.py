@@ -28,6 +28,8 @@ TIPOS = {
     "visto_comunidad": ("👀", "Tu producto en Chollometro", 0x1ABC9C),
     "reposicion": ("📦", "De nuevo en stock", 0x9B59B6),
     "oferta": ("🔥", "Oferta interesante", 0xE67E22),
+    "interes": ("🛍️", "En tu lista de intereses", 0x16A085),
+    "cambio_tienda": ("🔄", "Cambio en una tienda", 0x7F8C8D),
     "aviso_tecnico": ("⚠️", "No puedo leer el precio", 0xE74C3C),
 }
 

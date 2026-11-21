@@ -1,5 +1,20 @@
 """Modo 2: descubrir ofertas por categorias, sin intervencion manual.
 
+Niveles (el 1, tus productos, esta en seguimiento.py):
+
+- Nivel 2 · intereses activos (🛍️): lo que buscas ahora (p. ej. aspiradoras),
+  por palabras del titulo y con filtros flexibles: un descuento modesto
+  (15 %) o un precio por debajo de tu objetivo. En cualquier categoria.
+- Nivel 3 · chollazos (💥): descuento real de al menos el 60 % y 30 EUR, en
+  tus temas. Nada de ofertas comerciales normales.
+- Nivel 4 · posibles errores de precio (🚨): 80 % o mas (o la comunidad lo
+  marca asi en el titulo), en CUALQUIER categoria y a cualquier hora.
+
+Una oferta que encaja en varios niveles sale una sola vez, con el mas fuerte
+(error > minimos > chollazo > interes) y una nota si ademas es de tu lista.
+Nunca se avisa de algo reacondicionado, de segunda mano o usado salvo que
+desactives solo_nuevo.
+
 Flujo de cada ejecucion (cada fuente a su ritmo, p. ej. CholloMazon cada hora):
 
 1. Descarga las ofertas de la fuente y guarda su precio como historico LOCAL
@@ -34,7 +49,52 @@ from .modelo import NUEVO, Observacion, eur, fecha_corta, hora_madrid, iso, desd
 from .tarjeta import Tarjeta
 
 MODO = "descubrimiento"
-NIVELES = ["minimo_externo", "minimo_local", "oferta"]
+NIVELES = ["error", "minimo_externo", "minimo_local", "oferta", "interes"]
+# En el titulo: el producto no es nuevo (Amazon Renewed, Warehouse...).
+NO_NUEVO = ("reacondicionad", "refurbished", "renewed", "segunda mano", "seminuevo", "usado", "usada",
+            "open box", "outlet", "warehouse", "como nuevo", "reparado")
+
+
+def no_es_nuevo(titulo: str) -> bool:
+    t = titulo.lower()
+    return any(k in t for k in NO_NUEVO)
+
+
+def descuento(precio: int | None, antes: int | None) -> tuple[int, float]:
+    """(ahorro en centimos, porcentaje) frente al precio anterior, o (0, 0)."""
+    if precio is None or not antes or antes <= precio:
+        return 0, 0.0
+    return antes - precio, (antes - precio) * 100 / antes
+
+
+def interes_para(titulo: str, precio: int | None, antes: int | None, des: dict) -> dict | None:
+    """El interes activo (nivel 2) en el que encaja: palabras del titulo, rango
+    de precio y, o descuento suficiente, o precio por debajo del objetivo."""
+    if precio is None:
+        return None
+    t = titulo.lower()
+    for i in des.get("intereses", []):
+        if not i.get("activo", True):
+            continue
+        if not any(k.lower() in t for k in i["incluir"]) or any(k.lower() in t for k in i.get("excluir", [])):
+            continue
+        if precio < (i.get("precio_min") or 0) * 100:
+            continue
+        if i.get("precio_max") is not None and precio > i["precio_max"] * 100:
+            continue
+        ahorro, pct = descuento(precio, antes)
+        rebajado = pct >= i["descuento_min_pct"] and ahorro >= (i.get("ahorro_min_eur") or 0) * 100
+        objetivo = i.get("precio_objetivo")
+        if rebajado or (objetivo is not None and precio <= objetivo * 100):
+            return i
+    return None
+
+
+def es_error(precio: int | None, antes: int | None, err: dict) -> bool:
+    """Nivel 4 por numeros: 80 % o mas sobre algo que valia al menos valor_min."""
+    ahorro, pct = descuento(precio, antes)
+    return bool(antes) and antes >= err["valor_min_eur"] * 100 and pct >= err["descuento_min_pct"] \
+        and ahorro >= err["ahorro_min_eur"] * 100
 
 
 @dataclass
@@ -47,6 +107,7 @@ class Hallazgo:
     minimo_cent: int | None = None
     periodo: str = ""
     verificado: bool = False
+    interes: str | None = None
 
     @property
     def puntuacion(self) -> tuple:
@@ -77,21 +138,54 @@ def _categoria_ok(categoria: str, des: dict) -> bool:
 def pasa_filtros(c: Candidato, des: dict, max_antiguedad: timedelta, ahora: datetime) -> str | None:
     """None si pasa; si no, el motivo (para el log)."""
     titulo = c.titulo.lower()
-    if des.get("solo_nuevo", True) and (c.condicion != NUEVO or not c.disponible):
-        return "no es nuevo"
+    base = filtro_base(c, des, max_antiguedad, ahora)
+    if base:
+        return base
     if not _categoria_ok(c.categoria, des):
         return "categoria"
     if not des["precio_min"] * 100 <= c.precio_cent <= des["precio_max"] * 100:
         return "precio fuera de rango"
-    if c.comprobada and ahora - c.comprobada > max_antiguedad:
-        return "dato antiguo"
     if des["marcas"] and (c.marca or "").lower() not in [m.lower() for m in des["marcas"]]:
         return "marca"
     if des["palabras_clave"] and not any(k.lower() in titulo for k in des["palabras_clave"]):
         return "palabras clave"
-    if any(k.lower() in titulo for k in des["excluir_palabras"]):
-        return "palabra excluida"
     return None
+
+
+def filtro_base(c: Candidato, des: dict, max_antiguedad: timedelta, ahora: datetime) -> str | None:
+    """Lo que se aplica a todos los niveles: nuevo, con stock, dato reciente y
+    sin palabras excluidas."""
+    if des.get("solo_nuevo", True) and (c.condicion != NUEVO or not c.disponible or no_es_nuevo(c.titulo)):
+        return "no es nuevo"
+    if c.comprobada and ahora - c.comprobada > max_antiguedad:
+        return "dato antiguo"
+    if any(k.lower() in c.titulo.lower() for k in des["excluir_palabras"]):
+        return "palabra excluida"
+    if c.precio_cent < des["precio_min"] * 100:
+        return "precio fuera de rango"
+    return None
+
+
+def clasificar_todo(c: Candidato, des: dict, almacen: Almacen, ahora: datetime,
+                    max_antiguedad: timedelta) -> Hallazgo | None:
+    """El nivel mas fuerte en el que encaja la oferta, o None."""
+    if filtro_base(c, des, max_antiguedad, ahora):
+        return None
+    ref = c.precio_referencia_cent
+    interes = interes_para(c.titulo, c.precio_cent, ref, des)
+    h = None
+    if es_error(c.precio_cent, ref, des["errores"]) and (des["errores"]["todas_las_categorias"]
+                                                         or _categoria_ok(c.categoria, des)):
+        h = Hallazgo(c, "error", ref - c.precio_cent, ref, "Precio de referencia de Amazon")
+    if h is None and pasa_filtros(c, des, max_antiguedad, ahora) is None:
+        h = clasificar(c, des, almacen, ahora)
+    if h is None and interes:
+        ahorro, _ = descuento(c.precio_cent, ref)
+        h = Hallazgo(c, "interes", ahorro, ref if ahorro else None,
+                     "Precio de referencia de Amazon" if ahorro else "")
+    if h is not None and interes:
+        h.interes = interes["nombre"]
+    return h
 
 
 def _guardar_observacion(almacen: Almacen, c: Candidato, ahora: datetime) -> None:
@@ -178,6 +272,10 @@ def _evento(h: Hallazgo) -> str:
     return "descubrimiento_%s" % h.nivel
 
 
+def _ya_avisado(almacen: Almacen, clave: str, eventos, precio: int | None) -> bool:
+    return any(almacen.aviso_enviado(clave, e, precio) for e in eventos)
+
+
 def ejecutar(cfg: dict, almacen: Almacen, notificador, fuentes: list, ahora: datetime,
              leer=None, dormir=time.sleep, seguidos: set[str] | None = None) -> int:
     """fuentes: objetos con nombre, atribucion y candidatos(). leer: lector de la
@@ -226,25 +324,31 @@ def ejecutar(cfg: dict, almacen: Almacen, notificador, fuentes: list, ahora: dat
         return enviados
     hallazgos, vistos = [], set()
     for c, max_ant in candidatos:
-        motivo = pasa_filtros(c, des, max_ant, ahora)
-        h = None if motivo or c.asin in vistos else clasificar(c, des, almacen, ahora)
-        vistos.add(c.asin)
         _guardar_observacion(almacen, c, ahora)
+        if c.asin in vistos or c.asin in seguidos:
+            continue  # un producto que sigues lo avisa el seguimiento, no el descubrimiento
+        vistos.add(c.asin)
+        h = clasificar_todo(c, des, almacen, ahora, max_ant)
         if h:
             hallazgos.append(h)
 
     if not _en_horario(des, ahora):
-        print("Descubrimiento: %d hallazgos, fuera de horario de avisos" % len(hallazgos))
-        return enviados
+        # Un error de precio dura minutos: sale a cualquier hora.
+        fuera = len(hallazgos)
+        hallazgos = [h for h in hallazgos if h.nivel == "error"]
+        print("Descubrimiento: %d hallazgos fuera de horario, %d errores de precio" % (fuera, len(hallazgos)))
     cupo = min(des["max_avisos_ejecucion"], des["max_avisos_dia"] - almacen.avisos_desde(MODO, hoy))
     verificaciones = des["max_verificaciones_dia"] - int(almacen.meta("verificaciones_%s" % hoy.date()) or 0)
 
     hallazgos.sort(key=lambda h: h.puntuacion, reverse=True)
     primera_lectura, enviados_antes = True, enviados
+    eventos = ["descubrimiento_%s" % n for n in NIVELES]
     for h in hallazgos:
-        if almacen.aviso_enviado(h.cand.asin, _evento(h), h.cand.precio_cent):
+        if _ya_avisado(almacen, h.cand.asin, eventos, h.cand.precio_cent):
             continue
-        if enviados >= max(cupo, 0):
+        # Los errores de precio no gastan el cupo diario, solo el de la ejecucion.
+        tope = des["max_avisos_ejecucion"] if h.nivel == "error" else cupo
+        if enviados - enviados_antes >= max(tope, 0):
             almacen.registrar_candidato(h.cand.asin, _resumen(h, "fuera de cupo"), notificado=False)
             continue
         if des["verificar_en_amazon"] and leer:
@@ -272,42 +376,45 @@ def ejecutar(cfg: dict, almacen: Almacen, notificador, fuentes: list, ahora: dat
 
 # ------------------------------------------------------- chollos de la comunidad
 def evaluar_chollo(c, des: dict, ahora: datetime, max_ant: timedelta) -> str | None:
-    """'error_precio', 'chollo' o None. Un error de precio es lo que la comunidad
-    marca como tal; un chollo, un descuento >= descuento_min_pct frente al precio
-    anterior que da la propia publicacion."""
-    com = des["comunidad"]
-    texto = c.texto.lower()
-    if c.publicada and ahora - c.publicada > max_ant:
+    """'error_precio' (nivel 4), 'chollo' (nivel 3), 'interes' (nivel 2) o None.
+
+    - Error de precio: la comunidad lo pone en el TITULO (en la descripcion sale
+      en frases como "me parece un preciazo"), o el descuento frente al precio
+      anterior de la publicacion es del 80 % o mas. En cualquier categoria.
+    - Chollazo: 60 % y 30 EUR o mas sobre algo de 50 EUR o mas, en tus temas.
+    - Interes: encaja en uno de tus intereses activos.
+    Lo barato no interesa aunque sea un buen descuento: unos peines de 3 EUR o un
+    polo de 15 EUR rebajado no merecen un aviso."""
+    com, err = des["comunidad"], des["errores"]
+    texto, titulo = c.texto.lower(), c.titulo.lower()
+    if c.precio_cent is None or (c.publicada and ahora - c.publicada > max_ant):
         return None
     if any(k.lower() in texto for k in des["excluir_palabras"]):
         return None
-    if des["palabras_clave"] and not any(k.lower() in texto for k in des["palabras_clave"]):
+    if des.get("solo_nuevo", True) and no_es_nuevo(c.titulo):
         return None
     if com["tiendas"] and c.tienda.lower() not in [t.lower() for t in com["tiendas"]]:
         return None
-    # Solo los temas que te interesan: para ver de todo ya esta Chollometro.
-    if com["categorias"] and (c.categoria or "").lower() not in [k.lower() for k in com["categorias"]]:
-        return None
-    if c.precio_cent is not None and c.precio_cent > des["precio_max"] * 100:
-        return None
-    # Lo barato no interesa aunque sea un buen descuento: unos peines de 3 EUR o
-    # un polo de 15 EUR rebajado no son un chollo que merezca un aviso.
-    valor_ok = c.precio_antes_cent is not None and c.precio_antes_cent >= com["valor_min_eur"] * 100
-    ahorro = (c.precio_antes_cent - c.precio_cent) if valor_ok and c.precio_cent is not None else 0
-    # Error de precio: solo si la comunidad lo pone en el TITULO (en la
-    # descripcion sale en frases como "me parece un preciazo").
-    titulo = c.titulo.lower()
-    if any(k.lower() in titulo for k in com["palabras_error"]):
-        if c.precio_cent is None:
-            return None
-        if valor_ok and ahorro >= com["ahorro_min_eur"] * 100:
+    en_temas = not com["categorias"] or (c.categoria or "").lower() in [k.lower() for k in com["categorias"]]
+    antes = c.precio_antes_cent
+    ahorro, pct = descuento(c.precio_cent, antes)
+
+    if err["todas_las_categorias"] or en_temas:
+        if any(k.lower() in titulo for k in com["palabras_error"]):
+            if antes and antes >= err["valor_min_eur"] * 100 and ahorro >= err["ahorro_min_eur"] * 100:
+                return "error_precio"
+            if not antes and c.precio_cent >= com["precio_min_error_eur"] * 100:
+                return "error_precio"  # sin precio anterior: al menos que no sea calderilla
+        elif es_error(c.precio_cent, antes, err):
             return "error_precio"
-        if not c.precio_antes_cent and c.precio_cent >= com["precio_min_error_eur"] * 100:
-            return "error_precio"  # sin precio anterior: al menos que no sea calderilla
-        return None
-    if valor_ok and ahorro * 100 >= com["descuento_min_pct"] * c.precio_antes_cent \
-            and ahorro >= com["ahorro_min_eur"] * 100:
-        return "chollo"
+
+    if en_temas and c.precio_cent <= des["precio_max"] * 100 \
+            and (not des["palabras_clave"] or any(k.lower() in texto for k in des["palabras_clave"])):
+        if antes and antes >= com["valor_min_eur"] * 100 and pct >= com["descuento_min_pct"] \
+                and ahorro >= com["ahorro_min_eur"] * 100:
+            return "chollo"
+    if interes_para(c.titulo, c.precio_cent, antes, des):
+        return "interes"
     return None
 
 
@@ -344,14 +451,21 @@ def _procesar_comunidad(lote, cfg, almacen: Almacen, notificador, ahora, hoy, at
             continue
         tipo = evaluar_chollo(c, des, ahora, max_ant)
         clave = "%s:%s" % (fuente.nombre, c.id)
-        if not tipo or almacen.aviso_enviado(clave, "comunidad_%s" % tipo, c.precio_cent):
+        if not tipo or _ya_avisado(almacen, clave, ["comunidad_error_precio", "comunidad_chollo",
+                                                    "comunidad_interes"], c.precio_cent):
             continue
         # Un error de precio dura minutos: sale a cualquier hora. Los demas, en horario.
         if tipo != "error_precio" and not _en_horario(des, ahora):
             continue
         if almacen.avisos_desde(MODO, hoy) >= des["max_avisos_dia"] and tipo != "error_precio":
             continue
-        notificador.enviar(tarjeta_chollo(c, tipo, ahora, atribuciones.get(fuente.nombre, "")))
+        t = tarjeta_chollo(c, tipo, ahora, atribuciones.get(fuente.nombre, ""))
+        interes = interes_para(c.titulo, c.precio_cent, c.precio_antes_cent, des)
+        if interes:
+            t.notas.insert(0, "🛍️ De tu lista: %s" % interes["nombre"])
+            if tipo == "interes":
+                t.categoria = interes["nombre"]
+        notificador.enviar(t)
         almacen.registrar_aviso(clave, "comunidad_%s" % tipo, c.precio_cent, MODO, notificador.nombre, fecha=ahora)
         enviados += 1
         print("  %s: %s (%s)" % (tipo, c.titulo[:70], c.tienda))
@@ -377,7 +491,8 @@ def _resumen(h: Hallazgo, motivo: str) -> dict:
             "motivo": motivo}
 
 
-TIPO_TARJETA = {"minimo_externo": "minimo_365", "minimo_local": "minimo_registrado", "oferta": "oferta"}
+TIPO_TARJETA = {"error": "error_precio", "minimo_externo": "minimo_365", "minimo_local": "minimo_registrado",
+                "oferta": "chollo", "interes": "interes"}
 
 
 def tarjeta(h: Hallazgo, ahora: datetime, atribucion: str) -> Tarjeta:
@@ -394,9 +509,14 @@ def tarjeta(h: Hallazgo, ahora: datetime, atribucion: str) -> Tarjeta:
     if c.valoracion:
         t.notas.append("⭐ %s/5 (%s valoraciones)" % (str(c.valoracion).replace(".", ","),
                                                        "{:,}".format(c.num_valoraciones or 0).replace(",", ".")))
-    if h.nivel == "oferta" and h.referencia_cent and h.ahorro_cent * 100 >= 70 * h.referencia_cent:
-        t.tipo = "chollo"
-    if h.nivel == "oferta":
+    if h.interes:
+        t.notas.insert(0, "🛍️ De tu lista: %s" % h.interes)
+        if h.nivel == "interes":
+            t.categoria = h.interes
+    if h.nivel == "error":
+        t.notas.append("⚡ Descuento del %d %% o más: puede ser un error y durar poco"
+                       % int(h.ahorro_cent * 100 / h.referencia_cent))
+    if h.nivel in ("oferta", "error", "interes") and h.referencia_cent:
         t.notas.append("ℹ️ Descuento frente al precio de referencia que muestra Amazon, no frente a un histórico")
     t.fuente = atribucion
     t.condiciones = ["Envío no incluido"]

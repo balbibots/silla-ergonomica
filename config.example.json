@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "canal": "telegram",
   "seguimiento": {
     "activo": true,
@@ -20,7 +20,8 @@
       "min_dias_minimo": 14,
       "historial_caducidad_dias": 400,
       "avisar_cambios": true,
-      "cambio_min_eur": 1
+      "cambio_min_eur": 0.01,
+      "avisar_cambios_por_tienda": true
     },
     "avisos_tecnicos": false,
     "fallos_antes_de_aviso_tecnico": 3
@@ -159,7 +160,7 @@
       "minimo_externo": true
     },
     "oferta_interesante": {
-      "descuento_min_pct": 70,
+      "descuento_min_pct": 60,
       "ahorro_min_eur": 30
     },
     "minimo_local": {
@@ -182,7 +183,7 @@
         "error en el precio",
         "glitch"
       ],
-      "descuento_min_pct": 70,
+      "descuento_min_pct": 60,
       "ahorro_min_eur": 30,
       "tiendas": [],
       "valor_min_eur": 50,
@@ -192,6 +193,43 @@
         "Gaming",
         "Hogar, vivienda y oficina"
       ]
+    },
+    "intereses": [
+      {
+        "nombre": "Aspiradoras",
+        "activo": true,
+        "incluir": [
+          "aspiradora",
+          "aspirador",
+          "vacuum cleaner"
+        ],
+        "excluir": [
+          "robot",
+          "recambio",
+          "repuesto",
+          "bolsas",
+          "batería",
+          "bateria",
+          "soporte",
+          "mopa",
+          "coche",
+          "piscina",
+          "cenizas",
+          "industrial",
+          "taller"
+        ],
+        "precio_min": 50,
+        "precio_max": 250,
+        "precio_objetivo": 140,
+        "descuento_min_pct": 15,
+        "ahorro_min_eur": 10
+      }
+    ],
+    "errores": {
+      "descuento_min_pct": 80,
+      "ahorro_min_eur": 30,
+      "valor_min_eur": 50,
+      "todas_las_categorias": true
     }
   }
 }

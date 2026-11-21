@@ -20,7 +20,7 @@ from .modelo import Producto, Tienda, a_centimos, asin_desde, url_amazon
 
 RAIZ = Path(__file__).resolve().parent.parent
 EJEMPLO = RAIZ / "config.example.json"
-VERSION = 7
+VERSION = 8
 CANALES = ("telegram", "discord", "consola")
 FUENTES = ("amazon_ficha", "jsonld", "shopify", "pccomtracker")
 # Tiendas que no dejan leer sus fichas de forma automatica (comprobado el
@@ -79,6 +79,17 @@ PRODUCTOS_V4 = [
          {"tienda": "Dreame", "url": "https://es.dreametech.com/products/aspirador-sin-cable-r20-se-a"},
      ]},
 ]
+# v8: cuatro niveles. Nivel 2, categorias de interes activo (ejemplo: lo que
+# buscas ahora). Nivel 4, errores de precio en cualquier categoria.
+INTERESES_V8 = [{
+    "nombre": "Aspiradoras", "activo": True,
+    "incluir": ["aspiradora", "aspirador", "vacuum cleaner"],
+    "excluir": ["robot", "recambio", "repuesto", "bolsas", "batería", "bateria", "soporte", "mopa",
+                "coche", "piscina", "cenizas", "industrial", "taller"],
+    "precio_min": 50, "precio_max": 250, "precio_objetivo": 140,
+    "descuento_min_pct": 15, "ahorro_min_eur": 10,
+}]
+ERRORES_V8 = {"descuento_min_pct": 80, "ahorro_min_eur": 30, "valor_min_eur": 50, "todas_las_categorias": True}
 FUENTES_DESCUBRIMIENTO = ("chollomazon", "chollometro", "simulado")
 MIN_INTERVALO_FUENTE = {"chollomazon": 60, "chollometro": 5}
 
@@ -215,6 +226,25 @@ def actualizar_esquema(cfg: dict) -> tuple[dict, list[str]]:
         intervalos = cfg.setdefault("seguimiento", {}).setdefault("intervalo_min_por_fuente", {})
         intervalos.setdefault("pccomtracker", 60)
         cfg["version"] = 7
+    if cfg.get("version", 1) < 8:
+        # v8: cuatro niveles de seguimiento.
+        reg = cfg.setdefault("seguimiento", {}).setdefault("reglas", {})
+        reg["avisar_cambios"] = True
+        if reg.get("cambio_min_eur", 1) >= 1:
+            reg["cambio_min_eur"] = 0.01
+        reg.setdefault("avisar_cambios_por_tienda", True)
+        cambios.append("tus productos avisan de cualquier cambio de precio (desde 0,01 EUR) o de stock "
+                       "en cada tienda")
+        des = cfg.setdefault("descubrimiento", {})
+        des.setdefault("intereses", copy.deepcopy(INTERESES_V8))
+        cambios.append("nueva lista de intereses activos: aspiradoras (15 % o hasta 140 EUR)")
+        for sec in (des.setdefault("oferta_interesante", {}), des.setdefault("comunidad", {})):
+            if sec.get("descuento_min_pct", 70) >= 70:
+                sec["descuento_min_pct"] = 60
+        cambios.append("chollazos desde el 60 % y 30 EUR de ahorro")
+        des.setdefault("errores", dict(ERRORES_V8))
+        cambios.append("posibles errores de precio desde el 80 %, en cualquier categoria")
+        cfg["version"] = 8
     antes = json.dumps(cfg, sort_keys=True)
     _completar(cfg, ejemplo())
     if json.dumps(cfg, sort_keys=True) != antes:
@@ -321,6 +351,21 @@ def validar(cfg: dict) -> None:
     _num(des.get("oferta_interesante"), "ahorro_min_eur", "descubrimiento.oferta_interesante")
     _num(des.get("minimo_local"), "min_observaciones", "descubrimiento.minimo_local", 2)
     _num(des.get("minimo_local"), "min_dias", "descubrimiento.minimo_local", 1)
+    err = des.get("errores")
+    for k in ("descuento_min_pct", "ahorro_min_eur", "valor_min_eur"):
+        _num(err, k, "descubrimiento.errores")
+    intereses = des.get("intereses")
+    if not isinstance(intereses, list):
+        raise ErrorConfig("descubrimiento.intereses debe ser una lista")
+    for i, it in enumerate(intereses):
+        donde = "descubrimiento.intereses[%d]" % i
+        if not isinstance(it, dict) or not it.get("nombre") or not it.get("incluir") \
+                or not isinstance(it.get("incluir"), list) or not isinstance(it.get("excluir", []), list):
+            raise ErrorConfig("%s necesita 'nombre' y una lista 'incluir' (y 'excluir' opcional)" % donde)
+        _num(it, "descuento_min_pct", donde)
+        for k in ("precio_min", "precio_max", "precio_objetivo", "ahorro_min_eur"):
+            if it.get(k) is not None:
+                _num(it, k, donde)
     com = des.get("comunidad")
     if not isinstance(com, dict):
         raise ErrorConfig("Falta la seccion descubrimiento.comunidad")

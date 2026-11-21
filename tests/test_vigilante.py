@@ -249,11 +249,14 @@ class Seguimiento(unittest.TestCase):
         self.vuelta(0)
         self.precio = [None]
         self.vuelta(13)
-        self.assertEqual(self.canal.enviadas, [])
+        self.assertEqual([t.tipo for t in self.canal.enviadas], ["cambio_tienda"])
+        self.assertIn("❌ Amazon: se queda sin stock (estaba a 145,00 €)", self.canal.enviadas[0].notas)
+        self.vuelta(26)
+        self.assertEqual(len(self.canal.enviadas), 1, "sigue agotado: nada nuevo que contar")
         self.assertEqual(len(self.almacen.serie(ASIN)), 1, "sin stock no entra en la serie")
         self.precio = [14500]
-        self.vuelta(26)
-        self.assertEqual([t.tipo for t in self.canal.enviadas], ["reposicion"])
+        self.vuelta(39)
+        self.assertEqual([t.tipo for t in self.canal.enviadas], ["cambio_tienda", "reposicion"])
 
     def test_persistencia_tras_reiniciar(self):
         self.vuelta(0)
@@ -562,7 +565,7 @@ class Descubrimiento(unittest.TestCase):
         self.lote(T0)
         self.assertEqual(self.ejecutar(T0), 2, "desde la primera descarga, sin esperar")
         tipos = {t.nombre: t.tipo for t in self.canal.enviadas}
-        self.assertEqual(tipos, {"Auriculares X, con ANC": "oferta", "Sartenes": "oferta"},
+        self.assertEqual(tipos, {"Auriculares X, con ANC": "chollo", "Sartenes": "chollo"},
                          "fuera: Moda (categoria), el dato antiguo y el que no tiene referencia")
         t = self.canal.enviadas[0]
         self.assertEqual(t.referencia_etiqueta, "Precio de referencia de Amazon")
@@ -609,13 +612,33 @@ class Descubrimiento(unittest.TestCase):
         self.assertEqual((t.tipo, t.minimo_anterior_cent), ("minimo_registrado", 5999))
         self.assertIn("observado por el bot desde", t.minimo_periodo)
 
+    def test_error_de_precio_fuera_de_tus_temas_y_de_horario(self):
+        self.cfg["descubrimiento"]["horario"] = {"desde": "08:00", "hasta": "09:00"}
+        self.lote(T0, B0AAAAAAA3={"precio_referencia_cent": 49900, "precio_cent": 4999})  # Moda, 90 %
+        self.ejecutar(T0)
+        self.assertEqual([t.tipo for t in self.canal.enviadas], ["error_precio"])
+        self.assertTrue(any("puede ser un error" in n for n in self.canal.enviadas[0].notas))
+
+    def test_reacondicionado_y_productos_seguidos_fuera(self):
+        self.lote(T0, B0AAAAAAA1={"titulo": "Auriculares X (Reacondicionado)"})
+        self.ejecutar(T0, seguidos={"B0AAAAAAA2"})
+        self.assertEqual(self.canal.enviadas, [])
+
+    def test_interes_activo_en_cholloMazon(self):
+        self.lote(T0, B0AAAAAAA3={"titulo": "Cecotec Conga aspiradora escoba sin cable", "categoria": "Moda",
+                                  "precio_cent": 12999, "precio_referencia_cent": 13999})
+        self.ejecutar(T0)
+        t = next(t for t in self.canal.enviadas if "Cecotec" in t.nombre)
+        self.assertEqual((t.tipo, t.categoria), ("interes", "Aspiradoras"))
+        self.assertIn("🛍️ De tu lista: Aspiradoras", t.notas)
+
     def test_minimo_externo_con_grafico_importado(self):
         self.a.importar_historial("B0AAAAAAA2", historial_amazon.FUENTE, T0 - timedelta(days=3),
                                   [(T0 - timedelta(days=100), 6000), (T0 - timedelta(days=10), 7000)])
         self.lote(T0, B0AAAAAAA2={"precio_cent": 5590})
         self.ejecutar(T0)
-        self.assertEqual([t.tipo for t in self.canal.enviadas], ["minimo_365", "oferta"],
-                         "el minimo verificado va antes que la oferta interesante")
+        self.assertEqual([t.tipo for t in self.canal.enviadas], ["minimo_365", "chollo"],
+                         "el minimo verificado va antes que el chollazo")
 
     def test_producto_seguido_rebajado_pide_lectura_extra(self):
         self.a.registrar(Observacion("B0AAAAAAA2", T0 - timedelta(days=1), "amazon_ficha", precio_cent=7000))
@@ -775,6 +798,37 @@ class VariasTiendas(unittest.TestCase):
         self.assertEqual(self.a.serie("powerplanet:xiaomi-vacuum-cleaner-g20-blanco")[-1][1], 15995,
                          "el fallo no pisa el ultimo precio bueno")
 
+    def test_cada_tienda_avisa_de_sus_cambios_aunque_no_sea_la_mejor(self):
+        self.vuelta(0)
+        self.vuelta(1)
+        self.assertEqual(self.canal.enviadas, [], "sin cambios, nada")
+        self.precios["MediaMarkt"] = 18026  # un centimo, y no es la mas barata
+        self.vuelta(2)
+        t = self.canal.enviadas[-1]
+        self.assertEqual((t.tipo, t.precio_cent, t.boton), ("cambio_tienda", 18026, "🛒 Ver en MediaMarkt"))
+        self.assertEqual(t.notas[0], "📉 MediaMarkt: 180,27 € → 180,26 € (−0,01 €)")
+        self.assertIn("🏆 Mejor precio ahora: 159,95 € en Powerplanet", t.notas)
+        self.vuelta(3)
+        self.assertEqual(len(self.canal.enviadas), 1, "el mismo precio no se repite")
+
+    def test_cambios_simultaneos_en_una_sola_tarjeta(self):
+        self.vuelta(0)
+        self.precios.update(Powerplanet=15994, MediaMarkt=None, PcComponentes=17999)
+        self.vuelta(2)
+        self.assertEqual(len(self.canal.enviadas), 1)
+        t = self.canal.enviadas[0]
+        self.assertEqual((t.tipo, t.precio_cent), ("bajada", 15994))
+        cambios = next(n for n in t.notas if n.startswith("🔄 Cambios:"))
+        self.assertIn("❌ MediaMarkt: se queda sin stock", cambios)
+        self.assertIn("📈 PcComponentes: 176,99 € → 179,99 € (+3,00 €)", cambios)
+        self.assertNotIn("Powerplanet", cambios, "su cambio ya es el motivo de la tarjeta")
+
+    def test_un_fallo_no_es_un_cambio_de_stock(self):
+        self.vuelta(0)
+        self.precios["MediaMarkt"] = tiendas.BloqueoTienda("HTTP 429")
+        self.vuelta(1)
+        self.assertEqual(self.canal.enviadas, [])
+
     def test_reposicion_en_cualquier_tienda_y_objetivo(self):
         self.precios.update(Powerplanet=None, MediaMarkt=None, PcComponentes=None)
         self.vuelta(0)
@@ -915,10 +969,33 @@ class ChollosComunidad(unittest.TestCase):
         self.assertIsNone(self.ev(chollo("Polo de manga corta French Toast", 309, antes=1490)))
 
     def test_solo_tus_temas(self):
-        self.assertIsNone(self.ev(chollo("ERROR DE PRECIO: abrigo de marca", 4900, categoria="Moda y accesorios")))
-        self.assertIsNone(self.ev(chollo("Muñeca", 5000, antes=40000, categoria="Juguetes, familia e hijos")))
-        self.assertEqual(self.ev(chollo("Robot aspirador", 9900, antes=69900, categoria="Hogar, vivienda y oficina")),
+        self.assertIsNone(self.ev(chollo("Muñeca", 15000, antes=40000, categoria="Juguetes, familia e hijos")),
+                          "62 %: un chollazo, pero no de tus temas")
+        self.assertEqual(self.ev(chollo("Robot aspirador", 24900, antes=69900, categoria="Hogar, vivienda y oficina")),
                          "chollo")
+
+    def test_errores_de_precio_en_cualquier_categoria(self):
+        self.assertEqual(self.ev(chollo("ERROR DE PRECIO: abrigo de marca", 4900, categoria="Moda y accesorios")),
+                         "error_precio")
+        self.assertEqual(self.ev(chollo("Muñeca", 5000, antes=40000, categoria="Juguetes, familia e hijos")),
+                         "error_precio", "88 % sobre 400 EUR, aunque no sea de tus temas")
+        self.assertEqual(self.ev(chollo("Robot aspirador Roborock", 9900, antes=69900)), "error_precio")
+        self.assertIsNone(self.ev(chollo("Calcetines", 500, antes=4000)), "88 %, pero sobre 40 EUR: calderilla")
+
+    def test_reacondicionado_nunca(self):
+        self.assertIsNone(self.ev(chollo("iPhone 15 reacondicionado ERROR DE PRECIO", 9900, antes=79900)))
+        self.assertIsNone(self.ev(chollo("Portátil Lenovo (Renewed)", 19900, antes=89900)))
+
+    def test_intereses_activos(self):
+        self.assertEqual(self.ev(chollo("Dreame H12 Aspiradora sin cable", 13000, categoria="Hogar, vivienda y oficina")),
+                         "interes", "por debajo de tu objetivo de 140 EUR, aunque no traiga precio anterior")
+        self.assertEqual(self.ev(chollo("Rowenta X-Force aspiradora escoba", 20000, antes=24000, categoria="Hogar, vivienda y oficina")),
+                         "interes", "17 % y 40 EUR de ahorro")
+        self.assertIsNone(self.ev(chollo("Rowenta X-Force aspiradora escoba", 23000, antes=24000)), "solo un 4 %")
+        self.assertIsNone(self.ev(chollo("Bolsas para aspiradora Rowenta", 1500)), "accesorios fuera")
+        self.assertIsNone(self.ev(chollo("Robot aspirador Conga", 12000)), "los robots, excluidos en tu lista")
+        self.assertIsNone(self.ev(chollo("Aspiradora Dyson V15", 49900, antes=69900)), "por encima de 250 EUR")
+        self.assertIsNone(self.ev(chollo("Aspirador de mano", 3000)), "por debajo de 50 EUR")
 
     def test_error_de_precio_en_el_titulo(self):
         self.assertEqual(self.ev(chollo("ERROR DE PRECIO: Smart TV 55 pulgadas", 4900)), "error_precio")
@@ -927,8 +1004,8 @@ class ChollosComunidad(unittest.TestCase):
                           "en la descripcion no cuenta")
 
     def test_chollazo_de_verdad(self):
-        self.assertEqual(self.ev(chollo("Robot aspirador Roborock", 9900, antes=69900)), "chollo")
-        self.assertIsNone(self.ev(chollo("Roborock Qrevo 2 Pro", 29900, antes=69900)), "57 %: no llega al 70 %")
+        self.assertEqual(self.ev(chollo("Auriculares Sony WH-1000XM5", 12900, antes=39900)), "chollo")
+        self.assertIsNone(self.ev(chollo("Auriculares Sony WH-1000XM5", 17900, antes=39900)), "55 %: no llega al 60 %")
 
     def test_tus_productos_en_chollometro_sin_confundir_modelos(self):
         prods = config.ejemplo()["productos"]

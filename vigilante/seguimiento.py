@@ -13,6 +13,11 @@ reposicion) se aplican a ese mejor precio:
 - el minimo registrado es el mas bajo visto en cualquiera de sus tiendas;
 - la reposicion es que vuelva a haber unidades nuevas en alguna tienda.
 
+Ademas, cada tienda avisa de sus propios cambios (precio, aunque sea 0,01 EUR,
+o stock) frente a lo ultimo que se aviso de ella, aunque no sea la mas
+barata. Todo lo que cambia en un ciclo sale en UNA tarjeta por producto: con
+el motivo del mejor precio si lo hay, o como "cambio en una tienda" si no.
+
 Historicos de terceros: cada 12 h, para cada tienda que cubran, se guarda la
 serie de 180 dias de reacofertas y el minimo del ano de pccomtracker (ver
 terceros.py). No cambian que eventos se avisan: la tarjeta los muestra como
@@ -32,7 +37,7 @@ from pathlib import Path
 
 from . import config, historial_amazon, reglas, terceros, tiendas
 from .almacen import Almacen
-from .modelo import Observacion, Producto, Tienda, ahora_utc, desde_iso, eur, fecha_corta, iso
+from .modelo import OFERTA_DESTACADA, Observacion, Producto, Tienda, ahora_utc, desde_iso, eur, fecha_corta, iso
 from .tarjeta import Tarjeta
 
 VENTANA_DUPLICADOS = timedelta(hours=24)
@@ -130,8 +135,10 @@ def _csv_compatible(ruta: Path, p: Producto, t: Tienda, obs: Observacion) -> Non
 
 
 def _ultima(almacen: Almacen, clave: str):
-    return almacen.db.execute("SELECT * FROM observaciones WHERE clave=? AND origen='bot'"
-                              " ORDER BY fecha DESC LIMIT 1", (clave,)).fetchone()
+    # Solo lecturas de la ficha: el descubrimiento guarda tambien precios de
+    # ofertas con el mismo ASIN (tipo "oferta_<fuente>"), que no son la tienda.
+    return almacen.db.execute("SELECT * FROM observaciones WHERE clave=? AND origen='bot' AND tipo_precio=?"
+                              " ORDER BY fecha DESC LIMIT 1", (clave, OFERTA_DESTACADA)).fetchone()
 
 
 def situacion(p: Producto, almacen: Almacen, seg: dict, ahora: datetime) -> list[dict]:
@@ -212,6 +219,77 @@ def tarjeta_para(p: Producto, mejor: dict, sit: list[dict], obs: Observacion, re
             otras.append("%s sin stock" % s["tienda"].nombre)
     if otras:
         t.notas.append("🏬 Otras tiendas: " + " · ".join(otras))
+    t.enlaces = [(nombre if not nota else "%s (%s)" % (nombre, nota), url) for nombre, url, nota in p.enlaces]
+    return t
+
+
+def _estado_tienda(s: dict) -> dict:
+    fila = s["fila"]
+    disponible = bool(fila["disponible"]) and fila["precio_cent"] is not None
+    return {"precio": fila["precio_cent"] if disponible else None, "disponible": disponible}
+
+
+def cambios_por_tienda(sit: list[dict], almacen: Almacen) -> list[dict]:
+    """Tiendas cuyo precio o stock ha cambiado desde lo ultimo que se aviso de
+    ellas. La primera lectura de una tienda solo fija la referencia. Una tienda
+    sin lectura reciente (fallos) no cuenta: un fallo no es "sin stock"."""
+    cambios = []
+    for s in sit:
+        if s["fila"] is None or not s["reciente"]:
+            continue
+        est = almacen.estado(s["tienda"].clave)
+        actual = _estado_tienda(s)
+        base = est.get("notificado")
+        if base is None:
+            est["notificado"] = actual
+            almacen.guardar_estado(s["tienda"].clave, est)
+        elif base != actual:
+            cambios.append({"tienda": s["tienda"], "antes": base, "ahora": actual})
+    return cambios
+
+
+def _fijar_cambios(cambios: list[dict], almacen: Almacen) -> None:
+    for c in cambios:
+        est = almacen.estado(c["tienda"].clave)
+        est["notificado"] = c["ahora"]
+        almacen.guardar_estado(c["tienda"].clave, est)
+
+
+def texto_cambio(c: dict) -> str:
+    antes, ahora, nombre = c["antes"], c["ahora"], c["tienda"].nombre
+    if not ahora["disponible"]:
+        return "❌ %s: se queda sin stock%s" % (nombre, " (estaba a %s)" % eur(antes["precio"])
+                                                  if antes["precio"] else "")
+    if not antes["disponible"]:
+        return "📦 %s: vuelve a haber stock a %s" % (nombre, eur(ahora["precio"]))
+    dif = ahora["precio"] - antes["precio"]
+    return "%s %s: %s → %s (%s%s)" % ("📉" if dif < 0 else "📈", nombre, eur(antes["precio"]),
+                                    eur(ahora["precio"]), "+" if dif > 0 else "−", eur(abs(dif)))
+
+
+def tarjeta_cambios(p: Producto, cambios: list[dict], sit: list[dict], mejor: dict | None,
+                    almacen: Almacen, ahora: datetime) -> Tarjeta:
+    """Solo han cambiado tiendas que no mueven el mejor precio."""
+    c0 = cambios[0]
+    t0: Tienda = c0["tienda"]
+    est = almacen.estado(t0.clave)
+    t = Tarjeta(tipo="cambio_tienda", nombre=p.nombre, url=t0.url, comprobado=ahora,
+                precio_cent=c0["ahora"]["precio"], categoria=p.categoria,
+                imagen=est.get("imagen") or next((almacen.estado(x.clave).get("imagen") for x in p.tiendas
+                                                  if almacen.estado(x.clave).get("imagen")), None),
+                asin=t0.clave if t0.lector == "amazon_ficha" else None, boton="🛒 Ver en %s" % t0.nombre)
+    antes = c0["antes"]["precio"]
+    if c0["ahora"]["precio"] is not None and antes and antes > c0["ahora"]["precio"]:
+        t.referencia_cent, t.referencia_etiqueta = antes, "Antes en %s" % t0.nombre
+    t.disponibilidad = ("✅ En stock · Nuevo en %s" % t0.nombre if c0["ahora"]["disponible"]
+                        else "❌ Sin unidades nuevas en %s" % t0.nombre)
+    t.notas = [texto_cambio(c) for c in cambios]
+    if mejor:
+        t.notas.append("🏆 Mejor precio ahora: %s en %s" % (eur(mejor["precio"]), mejor["tienda"].nombre))
+    else:
+        t.notas.append("ℹ️ Ninguna tienda tiene unidades nuevas ahora")
+    t.fuente = ("Fuente: precio de %s publicado por pccomtracker.com" % t0.nombre if t0.lector == "pccomtracker"
+                else "Fuente: ficha de %s" % t0.nombre)
     t.enlaces = [(nombre if not nota else "%s (%s)" % (nombre, nota), url) for nombre, url, nota in p.enlaces]
     return t
 
@@ -349,6 +427,7 @@ def _evaluar(p: Producto, clave_p: str, est_p: dict, almacen: Almacen, seg: dict
         # Primera evaluacion con este conjunto de tiendas: una tienda recien
         # anadida que ya tenia stock no es una reposicion.
         res.motivos = [m for m in res.motivos if m.tipo != "reposicion"]
+    cambios = cambios_por_tienda(sit, almacen) if seg["reglas"].get("avisar_cambios_por_tienda") else []
     est_p = res.estado
     est_p["tiendas"] = claves_tiendas
     est_p["mejor_precio_cent"] = obs.precio_cent
@@ -363,9 +442,21 @@ def _evaluar(p: Producto, clave_p: str, est_p: dict, almacen: Almacen, seg: dict
     # asi que no se repite sola; el resto de eventos se protegen 24 h.
     repetido = motivo is not None and motivo.tipo not in ("bajada", "subida") and almacen.aviso_enviado(
         p.clave, motivo.tipo, obs.precio_cent, desde=ahora - VENTANA_DUPLICADOS)
+    t = None
     if motivo and not repetido:
         refs = referencias_terceros(mejor["tienda"], almacen, obs.precio_cent, ahora)
         t = tarjeta_para(p, mejor, sit, obs, res, serie_previa, anterior, ext, refs)
+        # Los cambios de las demas tiendas van en la misma tarjeta. El de la
+        # mejor tienda ya es el motivo si es una bajada, subida o reposicion.
+        resto = [c for c in cambios if not (c["tienda"] is mejor["tienda"]
+                                           and motivo.tipo in ("bajada", "subida", "reposicion"))]
+        if resto:
+            t.notas.append("🔄 Cambios: " + " · ".join(texto_cambio(c) for c in resto))
+    elif cambios:
+        t = tarjeta_cambios(p, cambios, sit, mejor, almacen, ahora)
+        motivo = reglas.Motivo("cambio_tienda")
+    _fijar_cambios(cambios, almacen)
+    if t is not None:
         try:
             notificador.enviar(t)
             almacen.registrar_aviso(p.clave, motivo.tipo, obs.precio_cent, "seguimiento",
