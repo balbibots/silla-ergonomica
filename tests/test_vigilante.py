@@ -452,7 +452,8 @@ class Configuracion(unittest.TestCase):
         ruta = tmp / "config.json"
         ruta.write_text(json.dumps(v1), encoding="utf-8")
         cfg = config.cargar(ruta)
-        self.assertEqual(cfg["version"], 2)
+        self.assertEqual(cfg["version"], 3)
+        self.assertEqual(cfg["seguimiento"]["intervalo_min_por_fuente"]["amazon_ficha"], 120)
         self.assertEqual(cfg["productos"], v1["productos"], "tus productos no se tocan")
         self.assertEqual(cfg["descubrimiento"]["categorias"], ["Electrónica"], "tus ajustes se conservan")
         self.assertTrue(cfg["descubrimiento"]["activo"])
@@ -516,6 +517,8 @@ class CholloMazonCSV(unittest.TestCase):
         f = fuentes.CholloMazon(a, descargar=lambda: (200, CSV_CM % {"pub": "", "comp": ""}, {"ETag": '"v1"'}))
         f.candidatos()
         self.assertEqual(a.meta("chollomazon_etag"), '"v1"')
+        sin_cambios = fuentes.CholloMazon(a, descargar=lambda: (304, "", {})).candidatos()
+        self.assertEqual(len(sin_cambios), 5, "con 304 se revisa la ultima version guardada")
 
 
 class Descubrimiento(unittest.TestCase):
@@ -540,11 +543,9 @@ class Descubrimiento(unittest.TestCase):
         return descubrimiento.ejecutar(self.cfg, self.a, self.canal, [self.fuente], ahora, leer=leer,
                                        dormir=lambda s: None, seguidos=seguidos)
 
-    def test_primera_descarga_es_linea_base(self):
+    def test_avisa_ya_de_las_ofertas_activas(self):
         self.lote(T0)
-        self.assertEqual(self.ejecutar(T0), 0)
-        self.lote(T0 + timedelta(hours=1))  # publicadas despues de la linea base
-        self.assertEqual(self.ejecutar(T0 + timedelta(hours=1)), 2)
+        self.assertEqual(self.ejecutar(T0), 2, "desde la primera descarga, sin esperar")
         tipos = {t.nombre: t.tipo for t in self.canal.enviadas}
         self.assertEqual(tipos, {"Auriculares X, con ANC": "oferta", "Sartenes": "oferta"},
                          "fuera: Moda (categoria), el dato antiguo y el que no tiene referencia")
@@ -561,11 +562,9 @@ class Descubrimiento(unittest.TestCase):
 
     def test_verificacion_en_amazon(self):
         self.lote(T0)
-        self.ejecutar(T0)
+        self.assertEqual(self.ejecutar(T0, leer=lectura_amazon(5999, valoracion=3.5)), 0)
         self.lote(T0 + timedelta(hours=1))
-        self.assertEqual(self.ejecutar(T0 + timedelta(hours=1), leer=lectura_amazon(5999, valoracion=3.5)), 0)
-        self.lote(T0 + timedelta(hours=2))
-        self.assertEqual(self.ejecutar(T0 + timedelta(hours=2), leer=lectura_amazon(5999, disponible=False)), 0)
+        self.assertEqual(self.ejecutar(T0 + timedelta(hours=1), leer=lectura_amazon(5999, disponible=False)), 0)
         filas = self.a.db.execute("SELECT datos FROM candidatos WHERE notificado=0").fetchall()
         motivos = {json.loads(f["datos"])["motivo"] for f in filas}
         self.assertIn("sin unidades nuevas en Amazon", motivos)
@@ -599,8 +598,9 @@ class Descubrimiento(unittest.TestCase):
         self.a.importar_historial("B0AAAAAAA2", historial_amazon.FUENTE, T0 - timedelta(days=3),
                                   [(T0 - timedelta(days=100), 6000), (T0 - timedelta(days=10), 7000)])
         self.lote(T0, B0AAAAAAA2={"precio_cent": 5590})
-        self.ejecutar(T0)  # linea base: los minimos si se avisan (no son "novedad")
-        self.assertEqual([t.tipo for t in self.canal.enviadas], ["minimo_365"])
+        self.ejecutar(T0)
+        self.assertEqual([t.tipo for t in self.canal.enviadas], ["minimo_365", "oferta"],
+                         "el minimo verificado va antes que la oferta interesante")
 
     def test_producto_seguido_rebajado_pide_lectura_extra(self):
         self.a.registrar(Observacion("B0AAAAAAA2", T0 - timedelta(days=1), "amazon_ficha", precio_cent=7000))

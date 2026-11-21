@@ -1,10 +1,10 @@
 {
-  "version": 2,
+  "version": 3,
   "canal": "telegram",
   "seguimiento": {
     "activo": true,
     "intervalo_min_por_fuente": {
-      "amazon_ficha": 720,
+      "amazon_ficha": 120,
       "shopify": 360
     },
     "lectura_extra_min_entre": 60,

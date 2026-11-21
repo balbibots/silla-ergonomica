@@ -18,8 +18,8 @@ Flujo de cada ejecucion (cada fuente a su ritmo, p. ej. CholloMazon cada hora):
    mejores, con limites por ejecucion y por dia y sin repetir nunca el mismo
    producto al mismo precio.
 
-La primera descarga de cada fuente es solo la linea base: las ofertas que ya
-existian no se notifican como novedad.
+Las ofertas que ya estan activas cuentan desde la primera descarga: se avisa
+de las mejores, dentro de los limites, y nunca dos veces al mismo precio.
 """
 from __future__ import annotations
 
@@ -141,8 +141,7 @@ def clasificar(c: Candidato, des: dict, almacen: Almacen, ahora: datetime) -> Ha
             return Hallazgo(c, "minimo_local", minimo - precio, None, "", minimo,
                             "observado por el bot desde %s" % fecha_corta(previas[0][0])[:10])
 
-    # 3. Oferta interesante: frente al precio de referencia de Amazon, y solo
-    #    si es nueva para el bot (no de la linea base).
+    # 3. Oferta interesante: frente al precio de referencia de Amazon.
     oi = des["oferta_interesante"]
     ref = c.precio_referencia_cent
     if avisar["ofertas_interesantes"] and ref and ref > precio:
@@ -210,27 +209,22 @@ def ejecutar(cfg: dict, almacen: Almacen, notificador, fuentes: list, ahora: dat
         except Exception as exc:  # noqa: BLE001 - una fuente no tumba al resto
             print("Descubrimiento: error leyendo %s: %s" % (fuente.nombre, exc))
             continue
-        linea_base = almacen.meta("inicio_%s" % fuente.nombre)
-        if not linea_base:
-            almacen.poner_meta("inicio_%s" % fuente.nombre, iso(ahora))
         atribuciones[fuente.nombre] = fuente.atribucion
         max_ant = timedelta(hours=ajustes["max_antiguedad_horas"])
         for c in lote:
             _marcar_seguidos(almacen, seguidos, c)
-            nueva = linea_base is not None and (c.publicada is None or c.publicada >= desde_iso(linea_base))
-            candidatos.append((c, max_ant, nueva))
-        print("Descubrimiento: %s trae %d ofertas%s" % (fuente.nombre, len(lote),
-                                                         "" if linea_base else " (linea base, sin avisos)"))
+            candidatos.append((c, max_ant))
+        print("Descubrimiento: %s trae %d ofertas" % (fuente.nombre, len(lote)))
 
     if not candidatos:
         return 0
     hallazgos, vistos = [], set()
-    for c, max_ant, nueva in candidatos:
+    for c, max_ant in candidatos:
         motivo = pasa_filtros(c, des, max_ant, ahora)
         h = None if motivo or c.asin in vistos else clasificar(c, des, almacen, ahora)
         vistos.add(c.asin)
         _guardar_observacion(almacen, c, ahora)
-        if h and (h.nivel != "oferta" or nueva):
+        if h:
             hallazgos.append(h)
 
     if not _en_horario(des, ahora):

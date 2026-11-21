@@ -18,7 +18,7 @@ from .modelo import Producto, a_centimos, asin_desde, url_amazon
 
 RAIZ = Path(__file__).resolve().parent.parent
 EJEMPLO = RAIZ / "config.example.json"
-VERSION = 2
+VERSION = 3
 CANALES = ("telegram", "discord", "consola")
 FUENTES = ("amazon_ficha", "shopify")
 FUENTES_DESCUBRIMIENTO = ("chollomazon", "simulado")
@@ -64,6 +64,14 @@ def actualizar_esquema(cfg: dict) -> tuple[dict, list[str]]:
             reglas["historial_caducidad_dias"] = 400
             cambios.append("el historial de 365 d importado ya no caduca al mes")
         cfg["version"] = 2
+    if cfg.get("version", 1) < 3:
+        # v3: un stock que dura poco no se puede vigilar cada 12 h. Solo se
+        # cambia si sigue el valor por defecto anterior.
+        intervalos = cfg.get("seguimiento", {}).get("intervalo_min_por_fuente", {})
+        if intervalos.get("amazon_ficha") == 720:
+            intervalos["amazon_ficha"] = 120
+            cambios.append("productos de Amazon cada 2 h en lugar de cada 12 h")
+        cfg["version"] = 3
     antes = json.dumps(cfg, sort_keys=True)
     _completar(cfg, ejemplo())
     if json.dumps(cfg, sort_keys=True) != antes:

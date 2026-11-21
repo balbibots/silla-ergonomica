@@ -114,11 +114,9 @@ def cmd_descubrimiento(args) -> int:
     almacen = abrir_almacen()
     if args.prueba:
         almacen = almacen.copia_en_memoria()
-        # En prueba se ignoran la espera entre descargas y la linea base.
+        # En prueba se ignora la espera entre descargas.
         for f in cfg["descubrimiento"]["fuentes"]:
             almacen.db.execute("DELETE FROM meta WHERE clave IN (?, ?)", ("proxima_%s" % f, "chollomazon_etag"))
-            if not almacen.meta("inicio_%s" % f):
-                almacen.poner_meta("inicio_%s" % f, "2000-01-01T00:00:00+00:00")
     _descubrir(cfg, almacen, notificadores.crear(cfg["canal"], args.prueba))
     return 0
 

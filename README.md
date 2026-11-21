@@ -77,22 +77,26 @@ del bot. Hay dos formas de aprovecharlas:
 
 ## Frecuencia
 
-- **Seguimiento:** cada 12 horas por producto (`intervalo_min_por_fuente`).
-  - **Por qué 12 h:** se fijó en octubre de 2026 como precaución tras los
-    CAPTCHA del modo HTTP ("menos visitas, menos CAPTCHA"). No sale de ningún
-    límite medido: **Amazon no publica ninguno** y no autoriza el acceso
-    automatizado a ningún ritmo.
+- **Seguimiento:** cada 2 horas por producto (`intervalo_min_por_fuente`).
+  - **Antes eran 12 h:** se fijaron en octubre de 2026 como precaución tras
+    los CAPTCHA del modo HTTP ("menos visitas, menos CAPTCHA"). No salían de
+    ningún límite medido: **Amazon no publica ninguno** y no autoriza el
+    acceso automatizado a ningún ritmo. Con 12 h, un stock que dura poco podía
+    aparecer y agotarse entre dos lecturas.
+  - **Si aparece un CAPTCHA,** el bot espera cada vez más (30 min, 1 h, 2 h)
+    sin insistir.
   - **Funcionamiento actual:** desde que se lee con el navegador real (24/10),
     los logs revisados de noviembre no muestran ningún CAPTCHA a 12 h.
 - **Lectura extra:** se adelanta la lectura cuando hay una señal real. Si un
   producto que sigues aparece en CholloMazon más barato que tu última lectura,
   se lee en Amazon en la siguiente vuelta. Entre dos lecturas extra pasan al
   menos 60 minutos (`lectura_extra_min_entre`).
-- **Si quieres más frecuencia:**
-  - Pon `"amazon_ficha": 360` (6 h). Técnicamente es viable para pocos
-    productos: son 4 visitas al día por producto.
+- **Otros ritmos:**
+  - Con `"amazon_ficha": 60` (1 h) son 24 visitas al día por producto.
   - Cada 15 minutos serían 96 al día por producto. No se recomienda: subiría
     mucho el riesgo de CAPTCHA y se acercaría a la extracción sistemática.
+- **Para enterarte al momento de una reposición,** lo más rápido es la alerta
+  gratuita de stock de Keepa a tu Telegram (ver "Alertas de Keepa").
 - **Descubrimiento:** CholloMazon como mucho una vez por hora, que es lo que
   dura su caché.
 - **Verificación de ofertas:** hasta 20 fichas de Amazon al día, con 60 s
@@ -102,14 +106,14 @@ del bot. Hay dos formas de aprovecharlas:
 
 `data/config.json` se crea solo la primera vez, copiando
 [`config.example.json`](config.example.json). Si es de una versión anterior,
-se actualiza solo, con copia de seguridad (`config.json.v1.bak`) y sin tocar
-tus productos. Se puede editar sin tocar código: el bot lo relee en cada
+se actualiza solo, con copia de seguridad (`config.json.v1.bak`,
+`config.json.v2.bak`) y sin tocar tus productos. Se puede editar sin tocar código: el bot lo relee en cada
 vuelta y lo valida entero.
 
 | Ajuste | Por defecto | Qué hace |
 |---|---|---|
 | `canal` | `telegram` | `telegram`, `discord` o `consola` (solo escribe en el log) |
-| `seguimiento.intervalo_min_por_fuente` | `amazon_ficha: 720` | Minutos entre lecturas de cada producto |
+| `seguimiento.intervalo_min_por_fuente` | `amazon_ficha: 120` | Minutos entre lecturas de cada producto |
 | `seguimiento.lectura_extra_min_entre` | `60` | Mínimo de minutos entre lecturas extra |
 | `seguimiento.reglas.bajada_pct` / `bajada_eur` | `5` / `10` | Bajada que merece aviso: 5 % **o** 10 € |
 | `seguimiento.reglas.min_observaciones_minimo` / `min_dias_minimo` | `10` / `14` | Historial que hace falta para un mínimo local |
@@ -192,9 +196,12 @@ siguiente vuelta.
    mismo producto al mismo precio. Lo descartado se guarda en la tabla
    `candidatos` con el motivo.
 
-**Primera descarga:** es solo la línea base. Las ofertas que ya existían no se
-avisan como novedad; desde ahí, solo las nuevas. Los mínimos sí se avisan
-siempre.
+**Desde la primera descarga** se avisa de las ofertas que ya están activas:
+primero las mejores, dentro de los límites, y nunca dos veces la misma al mismo
+precio. Lo que no cabe en una ejecución sale en las siguientes (si el CSV no
+ha cambiado, se revisa la última versión guardada). Los 30 días de historial
+solo hacen falta para el aviso de "mínimo del histórico local"; las ofertas
+interesantes no lo necesitan.
 
 **Cómo se calcula:**
 
@@ -311,7 +318,7 @@ Son 52 pruebas sin red. Cubren:
   - avisos pendientes.
 - **Descubrimiento:**
   - formato real del CSV de CholloMazon, 304 y `Retry-After`;
-  - línea base e intervalo de la fuente;
+  - avisos desde la primera descarga e intervalo de la fuente;
   - comprobación en Amazon, límites y los tres niveles;
   - lectura extra de los productos que sigues.
 - **Configuración y avisos:** actualización de la configuración antigua,
@@ -329,7 +336,7 @@ docker compose exec silla-sihoo-bot python3 -m vigilante descubrimiento --prueba
 
 - **Coste:** 0 €. Sin suscripciones, créditos ni APIs de pago.
 - **Lectura de fichas:** cada una tarda 10-30 s y usa unos 300-500 MB de RAM
-  mientras dura. Con 1 producto cada 12 h y hasta 20 verificaciones al día,
+  mientras dura. Con 1 producto cada 2 h y hasta 20 verificaciones al día,
   son unos minutos de trabajo al día.
 - **CholloMazon:** un CSV de unos 40 KB por hora.
 - **Disco:** SQLite crece unos pocos MB al año.

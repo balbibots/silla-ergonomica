@@ -115,7 +115,12 @@ class CholloMazon:
     def candidatos(self) -> list[Candidato]:
         estado, texto, cab = self.descargar()
         if estado == 304:
-            raise SinNovedades()
+            # Sin cambios: se revisa la ultima version guardada, para que las
+            # ofertas que no cupieron en el limite de avisos no se queden atras.
+            guardado = self.almacen.meta("chollomazon_csv")
+            if not guardado:
+                raise SinNovedades()
+            return parsear_chollomazon(guardado)
         if estado in (429, 503):
             try:
                 espera = timedelta(seconds=float(cab.get("Retry-After", "3600")))
@@ -129,6 +134,7 @@ class CholloMazon:
         for nombre, clave in (("ETag", "chollomazon_etag"), ("Last-Modified", "chollomazon_last_modified")):
             if cab.get(nombre):
                 self.almacen.poner_meta(clave, cab[nombre])
+        self.almacen.poner_meta("chollomazon_csv", texto)
         return parsear_chollomazon(texto)
 
 
