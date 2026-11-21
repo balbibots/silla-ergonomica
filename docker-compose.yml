@@ -24,4 +24,7 @@ services:
       # Raspberry Pi, fuera del contenedor, y sobrevive a todo eso.
       - ./data:/app/data
     environment:
+      - DATA_DIR=/app/data
+      - CONFIG_FILE=/app/data/config.json
+      - HISTORY_FILE=/app/data/historico_precios.csv
       - STATE_FILE=/app/data/state.json

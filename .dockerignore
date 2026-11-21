@@ -6,3 +6,6 @@ __pycache__
 data/
 state.json
 README.md
+tests
+*.har
+*.db

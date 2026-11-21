@@ -7,3 +7,9 @@ __pycache__/
 # escribia (o escribia antes) el workflow de GitHub Actions; son archivos
 # distintos, no hace falta que se pisen entre si.
 data/
+
+# Capturas del navegador y bases de datos: pueden llevar tu sesion o datos
+# personales. Nunca al repositorio.
+*.har
+*.db
+*.sqlite

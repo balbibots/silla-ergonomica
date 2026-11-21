@@ -1,0 +1,53 @@
+{
+  "canal": "telegram",
+  "seguimiento": {
+    "activo": true,
+    "intervalo_min_por_fuente": {
+      "amazon_ficha": 720,
+      "shopify": 360
+    },
+    "pausa_entre_amazon_seg": 60,
+    "reglas": {
+      "bajada_pct": 5,
+      "bajada_eur": 10,
+      "aviso_reposicion": true,
+      "avisar_minimos": true,
+      "min_observaciones_minimo": 10,
+      "min_dias_minimo": 14,
+      "historial_caducidad_dias": 30
+    },
+    "avisos_tecnicos": false,
+    "fallos_antes_de_aviso_tecnico": 3
+  },
+  "productos": [
+    {
+      "asin": "B0DJ82JKFL",
+      "nombre": "Xiaomi G20",
+      "categoria": "Aspiradoras",
+      "precio_objetivo": 125.0
+    }
+  ],
+  "descubrimiento": {
+    "activo": false,
+    "proveedor": "ninguno",
+    "modo_minimo": "externo",
+    "intervalo_min": 60,
+    "horario": {"desde": "08:00", "hasta": "23:00"},
+    "categorias": ["Electrónica", "Informática", "Hogar y cocina"],
+    "excluir_categorias": [],
+    "marcas": [],
+    "palabras_clave": [],
+    "excluir_palabras": [],
+    "precio_min": 25,
+    "precio_max": 600,
+    "descuento_min_pct": 20,
+    "ahorro_min_eur": 10,
+    "valoracion_min": 4.0,
+    "valoraciones_min": 25,
+    "dias_historial_min": 90,
+    "solo_nuevo": true,
+    "max_avisos_ejecucion": 5,
+    "max_avisos_dia": 15,
+    "max_candidatos": 100
+  }
+}

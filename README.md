@@ -1,460 +1,294 @@
 # Vigilante de precios
 
-Mismo tipo de bot que [yepoda-price-bot](https://github.com/balbibots/yepoda-price-bot),
-pero generalizado para vigilar **varios productos de fuentes distintas** a la
-vez, agrupados por categorías. De momento vigila uno:
+Bot personal que corre en Docker en una Raspberry Pi 5 y avisa por Telegram
+(o Discord) cuando pasa algo relevante con un precio. Coste de funcionamiento:
+**0 €**. Tiene dos modos independientes:
 
-| Categoría | Producto | Fuente | Último precio confirmado | Aviso si baja de |
-|---|---|---|---|---|
-| 🧹 Aspiradoras | Xiaomi G20 | [Amazon.es](https://www.amazon.es/dp/B0DJ82JKFL) | 125,00 € (2026-10-25; precio de referencia 199,99 €) | 125,00 € |
+1. **Seguimiento:** los productos que tú eliges, por ASIN o URL de Amazon
+   España.
+2. **Descubrimiento:** ofertas nuevas por categorías.
 
-> Del 2026-10 al 2026-11-10 vigiló también tres sillas (Sihoo B100 en la
-> tienda oficial y en Amazon, y Flexispot ErgoX Lite en Amazon). Se quitaron al
-> terminar ese seguimiento; sus lecturas siguen en `historico_precios.csv`. El
-> código para leer tiendas Shopify como la de Sihoo se mantiene, por si se
-> vuelve a necesitar. Las lecciones de abajo se aprendieron con ellas.
+El bot trabaja en silencio. No manda mensajes de "comprobación hecha", de
+precio sin cambios, de reinicio ni de errores puntuales: todo eso va a los
+logs y a la base de datos.
 
-El umbral de cada uno está puesto **al precio de hoy**: te avisará en cuanto
-baje aunque sea un céntimo. Súbelo en `check_price.py` (variable `PRODUCTOS`)
-si solo quieres que te avise a partir de una rebaja más grande.
+## Estado (noviembre de 2026)
 
-## ⚠️ Por qué esto ya NO corre en GitHub Actions
-
-**Sihoo (tienda oficial) es tan fiable como Yepoda.** Es una tienda Shopify y
-usa el mismo endpoint JSON (`/products/xxx.js`) — no depende de la
-maquetación de la página, así que es muy difícil que se rompa.
-
-**Amazon, en cambio, nos dio un problema real y confirmado.** Reconstruimos
-el historial completo mirando los commits de `state.json`: **las 13
-ejecuciones automáticas desde el despliegue fallaron el 100% de las veces**
-al intentar leer el precio en Amazon, mientras que la misma petición exacta
-funcionaba sin problema desde una conexión doméstica (el PC de casa y,
-después, la Raspberry). Conclusión: **Amazon tiene bloqueadas de forma permanente las
-IPs de GitHub Actions** para esta página — no es un bloqueo puntual ni un
-cambio de diseño de la web, es la infraestructura de GitHub la que está
-identificada y filtrada.
-
-Por eso el bot vive ahora en **Docker, en una Raspberry Pi propia** (ver
-más abajo): misma IP residencial de siempre, sin ese bloqueo. El workflow de
-GitHub Actions se queda solo con el botón manual (`workflow_dispatch`), por
-si algún día quieres lanzarlo desde ahí para probar algo puntual, pero la
-vigilancia real ya no depende de GitHub.
-
-**Reintento automático** (se queda, sigue siendo útil): antes de darse por
-vencido con un producto, el bot lo intenta hasta 2 veces, esperando 5
-segundos entre intento e intento — por si el fallo es un tropiezo de red
-normal y corriente, no un bloqueo de IP. Se ajusta con `REINTENTOS` y
-`ESPERA_ENTRE_REINTENTOS_SEG`. Si el servidor contesta **429** con una
-cabecera `Retry-After`, el bot espera lo que le pide (con un tope de 120 s,
-`MAX_ESPERA_RETRY_AFTER_SEG`) en vez de los 5 s genéricos, y el aviso de error
-incluye el estado, el `Retry-After` y el principio del cuerpo de la
-respuesta, para no tener que adivinar qué pasó.
-
-### Lección aprendida: Sihoo y el User-Agent de Chrome (2026-10-02)
-
-Ya en la Raspberry, **Sihoo empezó a responder 429 en todas las
-comprobaciones** (`local_rate_limited`, `Retry-After: 60`) durante unas 30 h,
-a pesar de hacer solo ~4 peticiones al día. Descartamos la IP (el `curl` desde
-la propia Pi, con la misma IP pública que el PC, daba 200) y luego probamos
-cuatro formas de pedir lo mismo desde dentro del contenedor:
-
-| Cabeceras | Resultado |
+| Función | Estado |
 |---|---|
-| UA de Chrome + `Accept: application/json` (como hacía el bot) | **429** |
-| Solo UA de Chrome | **429** |
-| UA de `curl` | 200 |
-| Sin UA propio (el de Python) | 200 |
+| Seguimiento de varios productos (añadir y quitar por ASIN o URL) | ✅ Operativo |
+| Nuevo, segunda mano, reacondicionado y agotado bien distinguidos | ✅ Operativo |
+| Avisos de bajada, precio objetivo, mínimo registrado y reposición | ✅ Operativo |
+| Tarjetas con foto, precio destacado, referencia tachada y botón | ✅ Telegram. ⏳ Discord: hecho y probado en simulación, falta un webhook real |
+| Histórico en SQLite, migración del CSV y CSV compatible | ✅ Operativo |
+| Mínimo de 365 días con el gráfico de Amazon | 🟡 Importación manual: el bot no puede consultarlo solo (ver abajo) |
+| Comprobación cada 15 minutos | ❌ Ninguna fuente lo autoriza. Sigue cada 12 h, configurable |
+| Descubrimiento por categorías | ⏳ Lógica, filtros, límites y pruebas listos. **Sin fuente real**: viene desactivado |
 
-Conclusión: **disfrazar el bot de navegador era lo que hacía que Shopify lo
-limitara.** Mi hipótesis (no confirmada) es que esa cadena exacta de Chrome,
-muy copiada en scrapers, comparte un límite saturado. Por eso el bot ahora se
-identifica con un User-Agent propio y honesto
-(`silla-sihoo-bot/1.0 (+URL del repo)`) para Shopify, que nadie más comparte.
-Amazon sí sigue usando el UA de navegador, porque lo necesita para servir la
-página normal.
+## Fuentes y autorización
 
-### Segunda parte: Sihoo vuelve al 429 y pasa al navegador (2026-10-24/25)
+Lo que se investigó y comprobó el 21/11/2026 antes de elegir:
 
-Con el cambio a la B100, Sihoo volvió a responder `429 too many requests`
-pidiendo su JSON directamente, una vez cada 6 h. El patrón no tenía una causa
-clara:
+| Fuente | Qué da | ¿Se puede usar? | Prueba |
+|---|---|---|---|
+| **Ficha de Amazon** (`/dp/ASIN`) | Precio actual, condición, vendedor, imagen y valoraciones | Sí, como hasta ahora: un Chromium real, sin sesión, una ficha cada 12 h por producto | Las [Condiciones de Uso](https://www.amazon.es/gp/help/customer/display.html?nodeId=201909000) prohíben la "extracción sistemática" de "partes sustanciales" sin permiso escrito. Una ficha cada 12 h para uso propio no busca eso, pero **Amazon no autoriza expresamente ningún acceso automatizado**. Por eso no se sube a cada 15 min ni se recorren categorías así |
+| **Historial de 365 días de Amazon** | Precio más bajo de cada día, sin envío | Solo a mano | Llega por `POST /rufus/cl/streaming`, el canal interno del asistente de compras, con tu **sesión iniciada** (cookies `at-acbes`, `sess-at-acbes`…) y un token anti-CSRF. No es una API pública, y automatizarlo supondría reutilizar tu sesión |
+| **Amazon Creators API** | Precio, condición, disponibilidad, vendedor, imágenes y búsqueda por categoría | Sí, **si eres elegible** | [Requisitos](https://affiliate-program.amazon.com/creatorsapi/docs/): cuenta de afiliado aceptada y **10 ventas cualificadas en 30 días**. Gratis. **No da histórico** |
+| **CamelCamelCamel** | Histórico, mayores bajadas y RSS | No | Sus [condiciones](https://es.camelcamelcamel.com/tos): "Scraping and/or other automated data collection from our website and/or emails is prohibited", sin excepción para el RSS |
+| **Keepa API** | Histórico completo | No | Es de pago (descartado) |
+| **Histórico propio** | Lo que el bot ha leído desde que empezó | Sí | No dice nada de antes de la primera lectura |
 
-| Desde (misma IP pública) | Cliente | Resultado |
+Conclusión: no hay hoy **ninguna fuente gratuita y autorizada** que dé
+candidatos por categoría con su histórico. El descubrimiento queda listo para
+cuando la haya (por ejemplo, la Creators API si llegas a ser elegible) y,
+mientras, no finge que funciona.
+
+## Configuración
+
+`data/config.json` se crea solo la primera vez, copiando
+[`config.example.json`](config.example.json). Se puede editar sin tocar
+código; el bot lo relee en cada vuelta y lo valida entero al arrancar.
+
+| Ajuste | Por defecto | Qué hace |
 |---|---|---|
-| PC | `curl` | 200 |
-| PC | Python (`urllib`) | 429 siempre |
-| Raspberry | Python | 7 ciclos bien, luego 429 |
-| Raspberry | `curl` | 429 |
+| `canal` | `telegram` | `telegram`, `discord` o `consola` (solo escribe en el log) |
+| `seguimiento.intervalo_min_por_fuente` | `amazon_ficha: 720` | Minutos entre lecturas de cada producto |
+| `seguimiento.reglas.bajada_pct` / `bajada_eur` | `5` / `10` | Bajada que merece aviso: 5 % **o** 10 € frente a la última lectura válida |
+| `seguimiento.reglas.min_observaciones_minimo` / `min_dias_minimo` | `10` / `14` | Historial que hace falta para hablar de "mínimo registrado" |
+| `seguimiento.reglas.historial_caducidad_dias` | `30` | Días que vale un historial de 365 días importado |
+| `seguimiento.avisos_tecnicos` | `false` | Avisar si un producto falla `fallos_antes_de_aviso_tecnico` veces seguidas |
+| `productos[]` | Xiaomi G20 | `asin`, `nombre`, `categoria`, `precio_objetivo` y, opcionalmente, `bajada_pct` y `bajada_eur` propios |
+| `descubrimiento.*` | desactivado | Categorías, filtros y límites del modo 2 (ver más abajo) |
 
-Un primer intento fue cambiar a `curl` (porque en el PC funcionaba), y en la
-Raspberry falló igual. En vez de seguir probando clientes hasta dar con uno que
-la tienda no limitase, **Sihoo se lee ahora igual que Amazon: con el navegador
-real**. Abre la página normal del producto, como cualquier visitante, y desde
-ella pide el JSON de producto, como hace el propio JavaScript de la tienda. En
-el PC donde Python daba 429 siempre, así leyó 4 de 4. `SHOPIFY_MODO=http`
-vuelve a la petición directa (útil para depurar).
+Los secretos van en `.env` ([`.env.example`](.env.example)), nunca en el
+JSON.
 
-### Lección aprendida: Amazon y el CAPTCHA (2026-10-08)
-
-Ya en la Raspberry, Amazon empezó a fallar de forma intermitente: de 12 ciclos
-seguidos, solo 2 leyeron el precio. El mensaje de error decía "puede que esté
-agotado", pero no era eso: **Amazon respondía con una página de CAPTCHA**
-(HTTP 200, ~3 KB, con `validateCaptcha`), no con un error. Las cookies que
-manda (`ak_bmsc`, `bm_sv`) son de un sistema anti-bots de Akamai.
-
-Medido el mismo día desde la IP de casa (la misma que usa la Raspberry):
-
-| Forma de pedir la ficha | Aciertos |
-|---|---|
-| Cliente HTTP del bot (Python `urllib`) | 1 de 4 (y 2 de 12 ciclos en la Pi) |
-| HTTP + cookies de sesión + cabeceras completas de navegador | **0 de 4** |
-| **Chromium real automatizado (Playwright)** | **6 de 6** |
-
-Por eso Amazon se lee ahora con un navegador real. Detalles que importan:
-
-- **El reintento tras un CAPTCHA espera 60 s** (`ESPERA_CAPTCHA_SEG`), no 5:
-  una segunda petición inmediata es justo lo que dispara el CAPTCHA.
-- **El mensaje de error dice la causa real** (CAPTCHA, o "la página no trae el
-  precio" con su tamaño y título), en vez de adivinar.
-- El navegador es nuevo y sin cookies en cada comprobación, y se presenta sin
-  la marca `HeadlessChrome` (es el mismo Chromium, solo que sin el rótulo de
-  "controlado por software").
-- **Coste:** la imagen de Docker pasa a ocupar ~2 GB en disco (~1 GB de
-  descarga) y cada comprobación de Amazon usa unos cientos de MB de RAM
-  durante unos segundos.
-- **No hay garantía:** Amazon puede endurecer su anti-bots en cualquier
-  momento. Si vuelve a fallar, el log lo dirá con claridad.
-
-**Segundo tropiezo, de despliegue (el mismo día).** La imagen oficial de
-Playwright "para Python" trae los navegadores pero **no** el paquete de Python
-(lo instala en un entorno temporal y lo borra al construirse). El primer
-despliegue no encontraba `playwright` y el modo `auto` caía **en silencio** al
-modo HTTP, así que los CAPTCHA que seguían saliendo eran los del cliente
-antiguo, no los del navegador. Ahora el `Dockerfile` instala `playwright==1.63.0`
-explícitamente (y comprueba en la construcción que se puede importar), fija
-`AMAZON_MODO=navegador` para que un Playwright roto dé un error claro en vez de
-degradarse sin avisar, y el log indica en cada comprobación con qué método se
-lee Amazon (`Amazon: leyendo con navegador real (Chromium)`).
-
-## Cómo lee cada precio
-
-**Sihoo**: el navegador real abre la ficha
-(`https://eu.sihoo.com/es/products/sihoo-b100-...?variant=48150078357718`) y,
-desde ella, pide `https://eu.sihoo.com/.../sihoo-b100-ergonomic-office-chair-with-flip-up-armrest.js`
-→ JSON con un array `variants`, cada uno con su `id`, `price` (en céntimos) y
-`available`. El bot busca la variante `48150078357718` (blanco, estándar) —
-si algún día quieres vigilar el negro o la versión con reposapiés en vez de
-o además de la blanca, hay que cambiar/añadir ese `variant_id` (dímelo y lo
-saco de la misma URL `.js`).
-
-**Amazon**: se carga la ficha con un **navegador real** (Chromium, vía
-Playwright) y se lee el precio del HTML ya pintado. Se prueban tres "anclas",
-de más a menos fiable, y gana la primera que aparezca:
-
-1. Un bloque de datos embebido con el precio de la buybox:
-   `"desktop_buybox_group_1":[{"displayPrice":"379,99 €","priceAmount":379.99,...}]`
-2. El atributo `data-csa-c-price-to-pay="336.99"` de la opción de compra "NEW"
-   (lo encontró el propio usuario inspeccionando la página; solo existe una vez
-   que el navegador ha ejecutado el JavaScript de Amazon, y por eso con una
-   petición HTTP simple no se veía).
-3. El texto visible del precio (`apex-pricetopay-value`), con formato español
-   (`1.299,00€` → 1299.0).
-
-`AMAZON_MODO=http` fuerza el modo antiguo, sin navegador (útil para depurar);
-con `auto` (por defecto) se usa el navegador si Playwright está instalado.
-
-Además, en Amazon:
-
-- **Cupones.** Si la ficha tiene un cupón (`Aplicar cupón de 45€` o
-  `del 10 %`), el precio vigilado es el **final, con el cupón descontado**,
-  que es lo que pagarías. Los avisos explican el desglose ("con cupón de 45 €,
-  sin cupón: 275,49 €") y también avisan si el cupón desaparece (para ti es
-  una subida de precio). Ojo: en Amazon el cupón hay que **marcarlo** en la
-  ficha antes de comprar.
-- **Comprobación del ASIN.** El precio solo se acepta si la página es de
-  verdad la ficha de ese producto (el ASIN de la URL aparece en ella). Así una
-  redirección a otra variante no se cuela como cambio de precio.
-
-### Para que falle lo menos posible (2026-10-24)
-
-- **Amazon se lee cada 12 h, no cada 6** (`AMAZON_CADA_HORAS`), contando desde
-  la última lectura correcta. Menos visitas, menos CAPTCHA. Si una lectura
-  falla, se reintenta en el siguiente ciclo (6 h), sin esperar a las 12.
-- **Pausa de 60 s entre las dos fichas de Amazon** (`ESPERA_ENTRE_AMAZON_SEG`)
-  para no pedirlas de golpe.
-- **Solo avisa de un error tras 3 ciclos seguidos fallando**
-  (`FALLOS_ANTES_DE_AVISAR`). Un CAPTCHA o un 429 sueltos se arreglan solos en
-  el ciclo siguiente y no te llegan; si el problema persiste (~12-18 h), sí.
-
-## Cómo son los mensajes
-
-En cada comprobación llega **un solo mensaje** con todas las novedades,
-agrupadas por categoría y con un bloque por producto (si no hay novedades, no
-llega nada):
-
-```
-🔔 2 novedades
-
-🪑 SILLAS
-━━━━━━━━━━━━━━━
-
-🔥 Sihoo B100 blanca · Amazon
-¡Por debajo de tu aviso de 169,99 €!
-💰 199,99 € → 159,99 €  (−40,00 €)
-Ver producto
-
-🧹 ASPIRADORAS
-━━━━━━━━━━━━━━━
-
-📉 Xiaomi G20 · Amazon
-Ha bajado de precio
-💰 125,00 € → 119,00 €  (−6,00 €)
-🎯 Aviso de chollo: por debajo de 115,00 €
-🎟️ Incluye cupón de 10,00 € (sin cupón: 129,00 €). Márcalo en la ficha al comprar.
-Ver producto
-```
-
-Los emojis de cabecera dicen qué ha pasado de un vistazo: 🔥 por debajo de tu
-aviso, 📉/📈 bajada/subida, ↗️ vuelve a subir por encima del aviso, 🟢/🛑 vuelve
-el stock / se agota, ⚠️ no se ha podido leer. El
-resumen semanal ("📡 Sigo vigilando") usa la misma disposición. Si algún día
-hay tantos productos que no cabe en un mensaje de Telegram, se parte por
-categorías.
-
-Si el envío a Telegram falla, no se marca nada como avisado: el aviso se
-repite en la siguiente comprobación.
-
-### ¿Comprar ya o esperar? El resumen del historial (2026-10-29)
-
-Cada aviso trae un resumen del historial de precios para decidir sin abrir
-ningún enlace:
-
-```
-📉 Xiaomi G20 · Amazon
-Ha subido de precio
-💰 125,00 € → 169,99 €  (+44,99 €)
-📊 Historial desde nov 2024 (CamelCamelCamel + bot)
-      mín 123,14 € (abr 2026) · media 151,20 € · máx 187,99 €
-⏳ Un 12 % por encima de su media: mejor esperar
-🛍️ Black Friday en 29 días: suele haber bajadas
-Ver producto  ·  Historial
-```
-
-- **De dónde salen los números**: de la `referencia` de cada producto en
-  `PRODUCTOS` (mínimo, media y máximo copiados **a mano** de
-  [CamelCamelCamel](https://es.camelcamelcamel.com)), ampliada con las
-  lecturas del propio bot (`historico_precios.csv`). Si el bot ve un precio
-  más bajo que el mínimo de la referencia, pasa a ser el nuevo mínimo.
-- **Por qué a mano**: las condiciones de uso de CamelCamelCamel prohíben
-  leer su web de forma automática, así que el bot no lo consulta. Amazon.es
-  no publica el historial sin iniciar sesión, y la API de Keepa (que sí lo
-  permite) cuesta desde 49 €/mes. **Actualiza la referencia cada pocos
-  meses** (fecha en `"copiado"`).
-- **La valoración** compara el precio actual con esos números: ⭐ en su
-  mínimo o casi (a menos de un 3 %), ✅ por debajo de la media, ➖ en la
-  media, ⏳ por encima (mejor esperar). Si queda menos de mes y medio para el
-  Black Friday y no está en su mínimo, lo recuerda. **No es una predicción**:
-  dice si el precio es bueno comparado con su historia.
-- Sin referencia (un producto que aún no tiene historial en CamelCamelCamel,
-  o una tienda que no está allí, como la oficial de Sihoo) usa solo las
-  lecturas del bot y avisa de que hay poco historial.
-- Los productos de Amazon llevan además el enlace **Historial** a su gráfico
-  de CamelCamelCamel. El resumen semanal incluye solo la línea de valoración.
-
-## Qué te avisa (y qué no)
-
-| Evento | ¿Avisa? |
-|---|---|
-| Un precio baja de su umbral | ✅ Una vez, hasta que vuelva a subir |
-| Un precio cambia (sube o baja) SIN cruzar el umbral | ✅ Con `NOTIFY_ON_ANY_CHANGE` (activado por defecto) — es el modo "seguimiento general": te enteras de cualquier movimiento de precio, no solo de las rebajas |
-| Sihoo se agota / vuelve a haber stock | ✅ |
-| Amazon se queda sin unidades nuevas (solo vende de 2ª mano) / vuelve a tenerlas | ✅ Una vez cada cosa, con el precio de 2ª mano y un enlace a otros vendedores. No cuenta como fallo |
-| En Amazon aparece o desaparece un cupón | ✅ Como cambio de precio (el precio vigilado es el final, con cupón) |
-| Ha pasado una semana sin ningún aviso | ✅ Un único mensaje con el precio actual de **todos** los productos |
-| Un producto falla al leer el precio | ✅ Solo si lleva **3 comprobaciones seguidas** fallando; después, máximo 1 vez / 24 h y **solo del que falla** |
-| Todo sigue exactamente igual | ❌ Silencio |
-
-Si en algún momento quieres volver a que solo te avise de bajadas de precio "de chollo" (sin seguimiento general de cada subida y bajada), pon `NOTIFY_ON_ANY_CHANGE: "false"` en el workflow.
-
-La primera vez que se ejecuta el bot no avisa de nada, solo guarda el punto
-de partida (precio, stock, fecha del heartbeat) de cada producto — igual que
-hacía el bot de Yepoda.
-
-## Añadir un producto nuevo en el futuro
-
-Es lo que cambia respecto al bot de Yepoda: en vez de un script por
-producto, aquí basta con añadir una entrada a la lista `PRODUCTOS` en
-`check_price.py`:
-
-```python
-{
-    "id": "algo_unico",          # su memoria: no lo cambies después
-    "categoria": "Aspiradoras",  # agrupa el producto en los mensajes
-    "nombre": "Xiaomi G20",      # como aparece en los mensajes
-    "tienda": "Amazon",
-    "tipo": "amazon",            # o "shopify"
-    "url": "https://www.amazon.es/dp/B0DJ82JKFL",
-    "variant_id": "...",         # solo si tipo == "shopify"
-    "umbral_eur": 125.00,
-    # Opcional: el historial de CamelCamelCamel, copiado a mano
-    "referencia": {"copiado": "2026-10-29", "desde": "2024-11-03",
-                   "min": [123.14, "2026-04-13"], "media": 151.20,
-                   "max": [187.99, "2026-08-20"]},
-},
-```
-
-Todo lo demás (estado, avisos, historial, resumen semanal) funciona solo para
-el producto nuevo. Una **categoría nueva** también: aparece en su propio
-grupo, en el orden en que esté en `PRODUCTOS`. Para darle emoji, añádelo a
-`EMOJI_CATEGORIA` en `check_price.py` (si no, sale con 📦).
-
-## Cómo probarlo en tu ordenador
-
-Igual que con Yepoda — mismo bot de Telegram si quieres, o uno nuevo:
-
-```powershell
-$env:TELEGRAM_BOT_TOKEN="tu_token"
-$env:TELEGRAM_CHAT_ID="tu_chat_id"
-python check_price.py --test
-```
-
-Y una comprobación real (sin forzar nada):
-
-```powershell
-python check_price.py
-```
-
-## Desplegar en tu propio servidor (Raspberry Pi, con Docker)
-
-Esto es lo que de verdad mantiene el bot vivo ahora. Se hace por SSH,
-conectado a la Raspberry.
-
-### 1. Copiar el proyecto a la Raspberry
-
-Lo más simple es clonar el repo directamente ahí:
+### Añadir y quitar productos
 
 ```bash
-git clone https://github.com/balbibots/silla-ergonomica.git
-cd silla-ergonomica
+docker compose exec silla-sihoo-bot python3 -m vigilante anadir "https://www.amazon.es/dp/B0DJ82JKFL" --nombre "Xiaomi G20" --categoria Aspiradoras --objetivo 125
+docker compose exec silla-sihoo-bot python3 -m vigilante quitar B0DJ82JKFL
+docker compose exec silla-sihoo-bot python3 -m vigilante listar
+docker compose exec silla-sihoo-bot python3 -m vigilante estado
 ```
 
-(Si prefieres no usar git en la Raspberry, también vale con copiar por
-`scp`/`sftp` los archivos: `check_price.py`, `loop_runner.py`, `Dockerfile`,
-`docker-compose.yml`, `.env.example`.)
+Se valida el ASIN (solo `amazon.es`) y no se admiten duplicados. Al quitar un
+producto, su histórico se conserva.
 
-### 2. Crear tu archivo de configuración
+## Qué avisa
+
+Un aviso por acontecimiento. Si coinciden varios, sale uno solo con el motivo
+principal y los demás como notas:
+
+| Prioridad | Aviso | Cuándo |
+|---|---|---|
+| 1 | 🏆 Nuevo mínimo de 365 días | Por debajo del mínimo del gráfico de 365 días importado, más lo leído desde entonces |
+| 2 | 🏆 Nuevo mínimo registrado | Por debajo del menor precio que el bot ha visto, con historial suficiente |
+| 3 | 🎯 Precio objetivo alcanzado | El precio a pagar (con cupón, si lo hay) llega a tu objetivo. Se rearma al superarlo |
+| 4 | 📉 Bajada de precio | Al menos 5 % o 10 € frente a la última lectura válida |
+| 5 | 🔁 Vuelve a su mínimo registrado | Solo después de haber subido |
+| 6 | 📦 De nuevo en stock | Vuelve a haber unidades **nuevas** tras no haberlas |
+
+No avisa:
+
+- de que se agota (se registra y se espera a la reposición);
+- de las ofertas de segunda mano o reacondicionadas (se guardan aparte);
+- de una primera lectura como "récord";
+- del mismo evento al mismo precio dentro de 24 h.
+
+Un aviso que no se puede enviar queda pendiente y se reintenta en la
+siguiente vuelta.
+
+**Cómo se calcula:**
+
+- **Precios:** todo en céntimos. Las series comparan el mismo ASIN, la
+  condición "nuevo" y el precio de la oferta destacada sin cupón.
+- **Media de 90 días:** la media de las medias diarias, y solo si hay lecturas
+  en al menos el 90 % de los días. Si no, no aparece.
+- **Mínimo de 365 días:** el gráfico de Amazon muestra el precio más bajo de
+  cualquier oferta de cada día. Eso nunca es mayor que el de la oferta
+  destacada, así que si el precio queda por debajo es un mínimo seguro. No se
+  usa si la importación ha caducado o si el bot ha dejado más de 2 días sin
+  leer desde entonces.
+
+### Formato
+
+```text
+🏆 NUEVO MÍNIMO DE 365 DÍAS
+Xiaomi Vacuum Cleaner G20
+
+💶 129,99 € | Media 90 d: 199,99 € (tachado)
+📉 Ahorro: 70,00 € (35 %)
+
+📊 Mínimo anterior (365 d): 139,99 €
+🏷 Categoría: Aspiradoras
+✅ En stock · Nuevo, vendido por Amazon
+📅 Comprobado: 21/11/2026 16:30
+Fuente: ficha de Amazon e historial de 365 d de Amazon (importado el 21/11/2026) · Envío no incluido
+
+[🛒 Ver en Amazon]
+```
+
+(Datos ficticios de ejemplo.)
+
+- **Telegram:** `sendPhoto` con la foto del producto, el texto con negrita y
+  tachado, y un botón real «🛒 Ver en Amazon».
+  - Si Telegram rechaza la foto, manda el mismo texto con `sendMessage`.
+  - Si el error es de red, no lo reenvía, para no duplicarlo.
+  - El texto se recorta para no pasar de 1024 caracteres.
+- **Discord:** un webhook con embed: borde de color según el aviso, título
+  enlazado a Amazon, miniatura y pie con fuente y condiciones. Las menciones
+  están desactivadas y se respeta el 429.
+  - Un webhook normal no admite botones interactivos. Discord indica que
+    puede enviar componentes no interactivos, pero no dice expresamente que
+    los botones de enlace lo sean. Para no depender de eso, el enlace va en el
+    título y como «🛒 Ver en Amazon» en el texto.
+
+**Recomendación: seguir con Telegram.** Ya funciona y tiene foto grande y
+botón real. Discord queda listo como alternativa. Para probarlo:
+
+1. En el canal privado de Discord: Editar canal → Integraciones → Webhooks →
+   Nuevo webhook → Copiar URL.
+2. Pon la URL en `.env` como `DISCORD_WEBHOOK_URL=...`.
+3. Cambia `"canal": "discord"` en `data/config.json`.
+
+Si el canal elegido no está configurado, el bot no arranca con él: nunca
+cambia de canal solo ni envía a los dos.
+
+## Historial de 365 días (importación manual)
+
+1. En tu navegador, abre la ficha del producto, pulsa **Historial de precios**
+   y espera a que salga el gráfico.
+2. En DevTools → Network → «Save all as HAR».
+3. Cópialo a la Pi e impórtalo:
+
+   ```bash
+   cp ~/Descargas/www.amazon.es.har ~/homelab/bots/silla-ergonomica/data/historial.har
+   docker compose exec silla-sihoo-bot python3 -m vigilante importar-historial data/historial.har --asin B0DJ82JKFL
+   rm ~/homelab/bots/silla-ergonomica/data/historial.har
+   ```
+
+Del HAR solo se lee el JSON del gráfico; las cookies y las cabeceras se
+ignoran y no se guardan. Aun así, **borra el HAR después**: contiene tu
+sesión de Amazon.
+
+El gráfico trae unos 95 puntos en un año, no uno por día, así que con él no
+se calculan medias, solo el mínimo y el máximo. Si el producto solo tiene
+ofertas de segunda mano, Amazon no muestra histórico de nuevo.
+
+## Descubrimiento de ofertas (modo 2)
+
+Pide candidatos a un **proveedor** por categoría (como máximo
+`max_candidatos` por ejecución), los filtra y verifica su histórico. Solo
+avisa de los mejores:
+
+- Precio entre 25 y 600 €.
+- Valoración de 4 o más, con al menos 25 valoraciones.
+- Solo productos nuevos y disponibles.
+- Marcas, palabras clave y palabras excluidas configurables.
+- Al menos 90 días de histórico.
+- Descuento de al menos un 20 % **y** 10 € frente a la media verificada de
+  90 días.
+- El precio debe estar en el mínimo del periodo o por debajo.
+- Ordenados por ahorro ponderado por la valoración.
+- Como máximo 5 avisos por ejecución y 15 al día. Nunca dos veces el mismo
+  producto al mismo precio.
+- Lo que no se notifica se guarda en la tabla `candidatos`.
+- Se ejecuta aparte del seguimiento (cada `intervalo_min`, dentro de
+  `horario`). Si falla, el seguimiento sigue.
+
+Hay dos modos de mínimo:
+
+- `externo`: el histórico del proveedor, y solo si es diario.
+- `local`: lo que el bot ha visto, siempre con la etiqueta "observado por el
+  bot desde…".
+
+Proveedores:
+
+- `simulado`: lee un JSON, para pruebas.
+- `ninguno`: el valor por defecto.
+
+Para activarlo hace falta un proveedor real autorizado (ver "Fuentes y
+autorización") y escribir su clase con los métodos `candidatos(categoria,
+limite)` e `historial(asin)`. Los identificadores de categoría deben salir del
+catálogo del propio proveedor, no inventarse.
+
+## Datos
+
+En `data/`, en la propia Pi:
+
+- **`precios.db` (SQLite):** observaciones, fallos aparte (nunca pisan el
+  último precio bueno), estado de cada producto, avisos enviados, historiales
+  importados y candidatos.
+- **`historico_precios.csv`:** se sigue rellenando con las mismas columnas de
+  siempre.
+- **Migración:** la primera vez, el CSV antiguo pasa a SQLite. Antes se copia
+  a `data/copias/historico_precios.csv.antes-de-migrar`. Se puede repetir sin
+  duplicar nada (`python3 -m vigilante migrar` muestra el recuento).
+- **Exportación completa:** `python3 -m vigilante exportar-csv data/exportacion.csv`.
+
+## Pruebas
 
 ```bash
-cp .env.example .env
-nano .env
+python -m unittest discover -s tests -v
 ```
 
-Rellena `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` (los mismos de siempre, o
-unos nuevos si prefieres separar avisos). Guarda con `Ctrl+O`, `Enter`,
-`Ctrl+X`. Este archivo **nunca se sube a git** (ya está en `.gitignore`).
+Son 44 pruebas sin red. Cubren:
 
-### 3. Construir y arrancar el contenedor
+- **Lectura de la ficha:** producto y variante correctos, precio de oferta
+  frente al tachado y las cuotas, decimales con coma, página sin precio,
+  CAPTCHA con HTTP 200, cupones, y nuevo frente a usado aunque la ficha diga
+  "En stock".
+- **Reglas de aviso:**
+  - mínimos nuevos e igualados, y la falta de historial;
+  - historial de 365 días caducado o con huecos, y su caché;
+  - un solo aviso cuando coinciden varios, y sin duplicados;
+  - ciclos sin cambios sin avisos, y persistencia tras reiniciar;
+  - avisos pendientes.
+- **Avisos y datos:** formato de Telegram y de Discord, foto rechazada,
+  errores dudosos sin duplicar, el 429 de Discord, migración idempotente,
+  configuración y límites del descubrimiento.
+
+Para una pasada real sin enviar ni guardar nada:
 
 ```bash
-docker compose up -d --build
+docker compose exec silla-sihoo-bot python3 -m vigilante seguimiento --prueba
 ```
 
-- `up` arranca el servicio.
-- `-d` lo deja corriendo en segundo plano (puedes cerrar la sesión SSH y
-  sigue funcionando).
-- `--build` construye la imagen la primera vez (y cada vez que cambies el
-  código).
+## Recursos y coste
 
-**La primera vez tarda varios minutos**: descarga la imagen oficial de
-Playwright (~1 GB) y ocupa ~2 GB en disco. Las siguientes reconstrucciones son
-rápidas, porque esa base ya está en la Raspberry.
+- **Coste:** 0 €. Sin suscripciones, créditos ni APIs de pago.
+- **Lectura:** abrir una ficha con Chromium tarda 10-30 s y usa unos
+  300-500 MB de RAM mientras dura. Con 1 producto cada 12 h, la Pi está
+  ociosa casi todo el tiempo. Entre fichas de Amazon hay 60 s de pausa.
+- **Disco:** SQLite crece unos pocos KB al mes por producto.
 
-### 4. Comprobar que funciona
+## Desplegar en la Raspberry Pi
 
 ```bash
-docker compose logs -f
+cd ~/homelab/bots/silla-ergonomica && git pull && docker compose up -d --build
+docker compose logs -f --tail 50
 ```
 
-Deberías ver algo como:
+En el primer arranque:
 
-```
-Bot arrancado en modo bucle. Comprobando cada 6.0 horas.
+- crea `data/config.json` y `data/precios.db`;
+- migra el CSV y el `state.json`;
+- lee la G20 en la primera vuelta.
 
-[2026-10-25T...] Nueva comprobacion...
-  Amazon: leyendo con navegador real (Chromium)
-[Xiaomi G20 · Amazon] 125.00 EUR | disponible: True | umbral: 125.00 EUR
-```
+Mientras solo haya oferta de segunda mano, el log dirá `sin unidades nuevas`
+y no llegará nada.
 
-En los ciclos en los que a Amazon aún no le toca (cada 12 h), verás
-`leido hace menos de 12 h, se salta este ciclo`.
-
-`Ctrl+C` sale de los logs sin parar el contenedor (sigue corriendo detrás).
-
-### Comandos que usarás a partir de ahora
-
-| Quiero... | Comando |
-|---|---|
-| Ver qué está haciendo ahora mismo | `docker compose logs -f` |
-| Pararlo | `docker compose down` |
-| Arrancarlo nuevamente | `docker compose up -d` |
-| Actualizar tras un cambio en el código (`git pull` primero) | `docker compose up -d --build` |
-| Ver si está corriendo | `docker compose ps` |
-
-### ¿Y si se reinicia la Raspberry?
-
-Con `restart: unless-stopped` en el `docker-compose.yml`, Docker vuelve a
-arrancar el contenedor solo, tanto si se cae por un error como si reinicias
-la Raspberry entera — siempre que el propio Docker esté configurado para
-arrancar al encender el sistema (lo normal en una instalación estándar).
-
-### El estado sobrevive a todo esto
-
-`state.json` no vive dentro del contenedor — vive en la carpeta `./data` de
-la propia Raspberry (se crea sola la primera vez), gracias al volumen del
-`docker-compose.yml`. Si reconstruyes la imagen, paras y arrancas el
-contenedor, o incluso lo borras y lo vuelves a crear, esa carpeta se queda
-intacta y el bot no "olvida" nada.
-
-En esa misma carpeta está `historico_precios.csv`: una fila por cada lectura
-correcta (fecha, producto, precio final, stock, precio sin cupón y cupón).
-Puedes abrirlo con Excel o LibreOffice para ver cómo evoluciona cada precio:
+## Volver a la versión anterior
 
 ```bash
-tail -n 20 data/historico_precios.csv
+cd ~/homelab/bots/silla-ergonomica && git checkout d0b68a9 && docker compose up -d --build
 ```
 
-### Quitar el bot y liberar el espacio
+La versión anterior sigue usando `state.json` y el CSV, que no se han tocado.
+Para volver a la actual: `git checkout main && docker compose up -d --build`.
 
-`docker compose down` solo borra el **contenedor**; la imagen (los ~2 GB) se
-queda en disco. Para liberarlos, desde la carpeta del proyecto:
+## Historia
 
-```bash
-docker compose down --rmi local
-```
-
-```bash
-docker image rm mcr.microsoft.com/playwright/python:v1.63.0-noble
-```
-
-```bash
-docker builder prune -f
-```
-
-El primero borra el contenedor y la imagen construida; el segundo, la imagen
-base de Playwright (si no la usa otro proyecto); el tercero, la caché de
-construcción. Después puedes borrar la carpeta del proyecto, que incluye
-`./data/state.json`.
-
-## Estructura
-
-```
-check_price.py                      el script (libreria estandar; Playwright solo para leer Amazon)
-loop_runner.py                      bucle que llama a check_price.py cada X horas (para Docker)
-Dockerfile                          la imagen del contenedor (base oficial de Playwright: navegador incluido)
-docker-compose.yml                  como se arranca (volumen, variables, reinicio automatico)
-.env.example                        plantilla de configuracion (copiar a .env, con tus datos)
-.github/workflows/check-price.yml   solo boton manual ahora (ver seccion de arriba)
-data/state.json                     memoria entre ejecuciones cuando corre en Docker (se crea sola)
-data/historico_precios.csv          todas las lecturas de precio (se crea sola)
-state.json                          memoria de cuando corria en GitHub Actions (historico, ya no se actualiza)
-```
+Cómo se llegó hasta aquí: el CAPTCHA de Amazon, el 429 de Sihoo, los
+mensajes agrupados… Está en [docs/historia.md](docs/historia.md).

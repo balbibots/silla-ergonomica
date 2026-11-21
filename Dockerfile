@@ -18,8 +18,11 @@ WORKDIR /app
 RUN pip install --no-cache-dir playwright==1.63.0 \
     && python3 -c "from importlib.metadata import version; import playwright.sync_api; print('Playwright', version('playwright'), 'importable')"
 
-# El resto del bot solo usa la libreria estandar.
-COPY check_price.py loop_runner.py ./
+# El resto del bot solo usa la libreria estandar (SQLite incluido).
+COPY check_price.py loop_runner.py config.example.json ./
+COPY vigilante ./vigilante
+# Si algun modulo no importa en esta arquitectura, que falle aqui, al construir.
+RUN python3 -c "import vigilante.__main__, vigilante.seguimiento, vigilante.descubrimiento; print('vigilante importable')"
 
 # Para que los mensajes salgan al instante en "docker compose logs".
 ENV PYTHONUNBUFFERED=1
@@ -39,4 +42,4 @@ ENV SHOPIFY_MODO=navegador
 # webs y escribe su propio archivo de estado, el riesgo es minimo, y evita los
 # tipicos problemas de permisos de Docker con el volumen de state.json.
 
-CMD ["python3", "loop_runner.py"]
+CMD ["python3", "-m", "vigilante", "bucle"]
