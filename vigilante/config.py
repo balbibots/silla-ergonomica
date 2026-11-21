@@ -11,16 +11,54 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shutil
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from .modelo import Producto, a_centimos, asin_desde, url_amazon
+from .modelo import Producto, Tienda, a_centimos, asin_desde, url_amazon
 
 RAIZ = Path(__file__).resolve().parent.parent
 EJEMPLO = RAIZ / "config.example.json"
-VERSION = 3
+VERSION = 4
 CANALES = ("telegram", "discord", "consola")
-FUENTES = ("amazon_ficha", "shopify")
+FUENTES = ("amazon_ficha", "jsonld", "shopify")
+# Tiendas que no dejan leer sus fichas de forma automatica (comprobado el
+# 21/11/2026): van como enlace en las tarjetas, nunca como tienda leida.
+NO_LEIBLES = {"pccomponentes.com": "PcComponentes sirve un desafio de Cloudflare (HTTP 403) "
+                                   "incluso a un navegador real; ponla en 'enlaces'"}
+
+# v4: la G20 pasa a seguirse en varias tiendas y se anaden la U20 y la R20 SE-A.
+# Fichas y EAN comprobados el 21/11/2026.
+G20_TIENDAS = [
+    {"tienda": "Amazon", "asin": "B0DJ82JKFL"},
+    {"tienda": "Powerplanet", "url": "https://www.powerplanetonline.com/es/xiaomi-vacuum-cleaner-g20-blanco"},
+    {"tienda": "MediaMarkt", "url": "https://www.mediamarkt.es/es/product/"
+                                    "_aspirador-escoba-xiaomi-g20-460-w-60-min-blanco-148640073.html"},
+]
+G20_ENLACES = [
+    {"tienda": "PcComponentes", "url": "https://www.pccomponentes.com/"
+                                       "xiaomi-vacuum-cleaner-g20-aspiradora-escoba-mano-sin-cable-460w-beige",
+     "nota": "color beige"},
+    {"tienda": "Xiaomi", "url": "https://www.mi.com/es/product/xiaomi-vacuum-cleaner-g20/"},
+]
+PRODUCTOS_V4 = [
+    {"id": "dreame-u20", "nombre": "Dreame U20", "categoria": "Aspiradoras", "precio_objetivo": 100.0,
+     "ean": "6976233670607",
+     "tiendas": [
+         {"tienda": "Dreame", "url": "https://es.dreametech.com/products/aspirador-sin-cable-u20"},
+         {"tienda": "MediaMarkt", "url": "https://www.mediamarkt.es/es/product/"
+                                         "_aspirador-escoba-dreame-308668681-370-w-60-min-negro-139804042.html"},
+     ],
+     "enlaces": [{"tienda": "PcComponentes",
+                  "url": "https://www.pccomponentes.com/dreame-u20-aspiradora-escoba-mano-sin-cable-370w-blanca"}]},
+    {"id": "dreame-r20-se-a", "nombre": "Dreame R20 SE-A", "categoria": "Aspiradoras", "precio_objetivo": 140.0,
+     "ean": "6978515257575",
+     "tiendas": [
+         {"tienda": "Amazon", "asin": "B0FY784L7H"},
+         {"tienda": "Dreame", "url": "https://es.dreametech.com/products/aspirador-sin-cable-r20-se-a"},
+     ]},
+]
 FUENTES_DESCUBRIMIENTO = ("chollomazon", "simulado")
 
 
@@ -72,6 +110,20 @@ def actualizar_esquema(cfg: dict) -> tuple[dict, list[str]]:
             intervalos["amazon_ficha"] = 120
             cambios.append("productos de Amazon cada 2 h en lugar de cada 12 h")
         cfg["version"] = 3
+    if cfg.get("version", 1) < 4:
+        productos_cfg = cfg.setdefault("productos", [])
+        for p in productos_cfg:
+            if p.get("asin", "").upper() == "B0DJ82JKFL" and "tiendas" not in p:
+                asin = p.pop("asin")
+                p.update(id=asin, ean="6941812791936", tiendas=copy.deepcopy(G20_TIENDAS),
+                         enlaces=copy.deepcopy(G20_ENLACES))
+                cambios.append("la G20 se sigue tambien en Powerplanet y MediaMarkt")
+        ids = {p.get("id") or p.get("asin") for p in productos_cfg}
+        for nuevo in PRODUCTOS_V4:
+            if nuevo["id"] not in ids:
+                productos_cfg.append(copy.deepcopy(nuevo))
+                cambios.append("anadida la %s" % nuevo["nombre"])
+        cfg["version"] = 4
     antes = json.dumps(cfg, sort_keys=True)
     _completar(cfg, ejemplo())
     if json.dumps(cfg, sort_keys=True) != antes:
@@ -140,21 +192,15 @@ def validar(cfg: dict) -> None:
         donde = "productos[%d]" % i
         if not isinstance(p, dict) or not p.get("nombre"):
             raise ErrorConfig("%s necesita al menos un nombre" % donde)
-        fuente = p.get("fuente", "amazon_ficha")
-        if fuente not in FUENTES:
-            raise ErrorConfig("%s.fuente debe ser una de %s" % (donde, FUENTES))
-        if fuente == "amazon_ficha":
-            try:
-                clave = asin_desde(p.get("asin", ""))
-            except ValueError as exc:
-                raise ErrorConfig("%s: %s" % (donde, exc)) from exc
-        else:
-            if not p.get("url") or not p.get("variant_id"):
-                raise ErrorConfig("%s (shopify) necesita url y variant_id" % donde)
-            clave = "shopify:%s" % p["variant_id"]
-        if clave in vistos:
-            raise ErrorConfig("%s esta repetido (%s)" % (donde, clave))
-        vistos.add(clave)
+        try:
+            producto = _producto(p)
+        except (ValueError, KeyError) as exc:
+            raise ErrorConfig("%s: %s" % (donde, exc)) from exc
+        claves = [producto.clave] + [t.clave for t in producto.tiendas if t.clave != producto.clave]
+        for clave in claves:
+            if clave in vistos:
+                raise ErrorConfig("%s esta repetido (%s)" % (donde, clave))
+            vistos.add(clave)
         for k in ("precio_objetivo", "bajada_pct", "bajada_eur"):
             if p.get(k) is not None:
                 _num(p, k, donde)
@@ -187,29 +233,63 @@ def validar(cfg: dict) -> None:
             raise ErrorConfig("descubrimiento.%s debe ser una lista" % k)
 
 
+def _referencia(url: str) -> str:
+    ruta = urlsplit(url).path.rstrip("/")
+    return re.sub(r"\.(html?|js)$", "", ruta.rsplit("/", 1)[-1]) or urlsplit(url).netloc
+
+
+def _tienda(t: dict) -> Tienda:
+    nombre = (t.get("tienda") or "").strip()
+    if not nombre:
+        raise ValueError("cada tienda necesita un nombre ('tienda')")
+    if t.get("asin"):
+        asin = asin_desde(t["asin"])
+        return Tienda(nombre, "amazon_ficha", asin, url_amazon(asin))
+    url = t.get("url") or ""
+    if not url.startswith("https://"):
+        raise ValueError("la tienda %s necesita 'asin' o una 'url' https" % nombre)
+    host = urlsplit(url).netloc.lower()
+    for dominio, motivo in NO_LEIBLES.items():
+        if host.endswith(dominio):
+            raise ValueError(motivo)
+    lector = t.get("lector") or ("shopify" if re.search(r"/products/[^/]+/?$", urlsplit(url).path) else "jsonld")
+    if lector not in FUENTES or lector == "amazon_ficha":
+        raise ValueError("lector no valido para %s: %s" % (nombre, lector))
+    clave = "%s:%s" % (re.sub(r"\W+", "", nombre.lower()), t.get("variant_id") or _referencia(url))
+    extra = {"variant_id": str(t["variant_id"])} if t.get("variant_id") else {}
+    return Tienda(nombre, lector, clave, url, extra)
+
+
+def _producto(p: dict) -> Producto:
+    objetivo = a_centimos(p["precio_objetivo"]) if p.get("precio_objetivo") is not None else None
+    comun = dict(nombre=p["nombre"], categoria=p.get("categoria", "Otros"), precio_objetivo_cent=objetivo,
+                 bajada_pct=p.get("bajada_pct"), bajada_eur=p.get("bajada_eur"))
+    if p.get("tiendas"):
+        if not p.get("id"):
+            raise ValueError("un producto con varias tiendas necesita un 'id'")
+        tiendas = [_tienda(t) for t in p["tiendas"]]
+        enlaces = [(e["tienda"], e["url"], e.get("nota", "")) for e in p.get("enlaces", [])]
+        ean = str(p["ean"]) if p.get("ean") else None
+        return Producto(clave=str(p["id"]), ean=ean, tiendas=tiendas, enlaces=enlaces, **comun)
+    if p.get("fuente") == "shopify":  # formato antiguo
+        if not p.get("url") or not p.get("variant_id"):
+            raise ValueError("(shopify) necesita url y variant_id")
+        t = Tienda(p.get("tienda", "Tienda"), "shopify", "shopify:%s" % p["variant_id"], p["url"],
+                   {"variant_id": str(p["variant_id"])})
+        return Producto(clave=t.clave, tiendas=[t], **comun)
+    asin = asin_desde(p.get("asin", ""))  # formato antiguo: solo Amazon
+    return Producto(clave=asin, tiendas=[Tienda("Amazon", "amazon_ficha", asin, url_amazon(asin))], **comun)
+
+
 def productos(cfg: dict) -> list[Producto]:
-    lista = []
-    for p in cfg.get("productos", []):
-        fuente = p.get("fuente", "amazon_ficha")
-        objetivo = a_centimos(p["precio_objetivo"]) if p.get("precio_objetivo") is not None else None
-        if fuente == "amazon_ficha":
-            asin = asin_desde(p["asin"])
-            lista.append(Producto(asin, p["nombre"], fuente, url_amazon(asin),
-                                  p.get("categoria", "Otros"), objetivo,
-                                  p.get("bajada_pct"), p.get("bajada_eur")))
-        else:
-            lista.append(Producto("shopify:%s" % p["variant_id"], p["nombre"], fuente, p["url"],
-                                  p.get("categoria", "Otros"), objetivo, p.get("bajada_pct"),
-                                  p.get("bajada_eur"), {"variant_id": str(p["variant_id"]),
-                                                         "tienda": p.get("tienda", "Tienda")}))
-    return lista
+    return [_producto(p) for p in cfg.get("productos", [])]
 
 
 def anadir_producto(cfg: dict, asin_o_url: str, nombre: str | None, categoria: str | None,
                     objetivo: float | None) -> tuple[dict, str]:
     """Devuelve (config nueva, asin). Error si el ASIN no vale o ya esta."""
     asin = asin_desde(asin_o_url)
-    if any(p.get("asin", "").upper() == asin for p in cfg.get("productos", [])):
+    if any(asin in [pr.clave] + [t.clave for t in pr.tiendas] for pr in productos(cfg)):
         raise ErrorConfig("%s ya esta en la lista" % asin)
     nuevo = copy.deepcopy(cfg)
     entrada = {"asin": asin, "nombre": nombre or asin, "categoria": categoria or "Otros"}
@@ -220,11 +300,16 @@ def anadir_producto(cfg: dict, asin_o_url: str, nombre: str | None, categoria: s
     return nuevo, asin
 
 
-def quitar_producto(cfg: dict, asin_o_url: str) -> dict:
-    asin = asin_desde(asin_o_url)
+def quitar_producto(cfg: dict, id_asin_o_url: str) -> dict:
+    """Quita por id de producto, ASIN o URL de Amazon."""
+    try:
+        clave = asin_desde(id_asin_o_url)
+    except ValueError:
+        clave = id_asin_o_url.strip()
     nuevo = copy.deepcopy(cfg)
     antes = len(nuevo.get("productos", []))
-    nuevo["productos"] = [p for p in nuevo.get("productos", []) if p.get("asin", "").upper() != asin]
+    nuevo["productos"] = [p for p in nuevo.get("productos", [])
+                          if clave not in [_producto(p).clave] + [t.clave for t in _producto(p).tiendas]]
     if len(nuevo["productos"]) == antes:
         raise ErrorConfig("%s no esta en la lista" % asin)
     return nuevo

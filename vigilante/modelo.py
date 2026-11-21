@@ -43,16 +43,34 @@ class Observacion:
 
 
 @dataclass
+class Tienda:
+    """Donde se vende un producto y como se lee su precio."""
+
+    nombre: str            # "Amazon", "MediaMarkt", "Powerplanet", "Dreame"...
+    lector: str            # "amazon_ficha", "jsonld" o "shopify"
+    clave: str             # ASIN en Amazon; "<tienda>:<referencia>" en el resto
+    url: str               # la ficha donde se compra
+    extra: dict = field(default_factory=dict)  # p. ej. variant_id de Shopify
+
+
+@dataclass
 class Producto:
-    clave: str
+    """Un producto que se sigue, en una o varias tiendas. El precio que cuenta
+    es el mejor con stock entre todas las tiendas que se pueden leer."""
+
+    clave: str             # id del producto (en los antiguos, el ASIN)
     nombre: str
-    fuente: str = "amazon_ficha"
-    url: str = ""
     categoria: str = "Otros"
     precio_objetivo_cent: int | None = None
     bajada_pct: float | None = None   # None = la general de la configuracion
     bajada_eur: float | None = None
-    extra: dict = field(default_factory=dict)  # p. ej. variant_id de Shopify
+    ean: str | None = None
+    tiendas: list[Tienda] = field(default_factory=list)
+    enlaces: list[tuple[str, str, str]] = field(default_factory=list)  # (tienda, url, nota) solo para mirar
+
+    @property
+    def url(self) -> str:
+        return self.tiendas[0].url if self.tiendas else ""
 
 
 # --------------------------------------------------------------------------

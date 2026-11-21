@@ -7,8 +7,9 @@ que siga funcionando.
 
 Tiene dos modos independientes:
 
-1. **Seguimiento:** los productos que tú eliges, por ASIN o URL de Amazon
-   España.
+1. **Seguimiento:** los productos que tú eliges, en Amazon y en otras tiendas
+   españolas (Powerplanet, MediaMarkt, tiendas oficiales). Cuenta el mejor
+   precio con stock entre todas.
 2. **Descubrimiento:** ofertas nuevas por categorías, a partir de los datos
    abiertos de [CholloMazon](https://chollomazon.com/datos) (CC BY 4.0).
 
@@ -32,6 +33,8 @@ Además, para los productos que sigues: 🎯 precio objetivo, 📉 bajada,
 | Función | Estado |
 |---|---|
 | Seguimiento de varios productos (añadir y quitar por ASIN o URL) | ✅ Operativo |
+| Un producto en varias tiendas, avisando con el mejor precio con stock | ✅ Operativo: Amazon, Powerplanet, MediaMarkt y la tienda oficial de Dreame. Probado con lecturas reales |
+| PcComponentes | 🔗 Solo como enlace en las tarjetas: bloquea la lectura automática |
 | Nuevo, segunda mano, reacondicionado y agotado bien distinguidos | ✅ Operativo (comprobado en la Pi con la G20) |
 | Histórico en SQLite, migración del CSV y CSV compatible | ✅ Operativo (198 filas migradas en la Pi) |
 | Descubrimiento automático por categorías con CholloMazon | ✅ Probado con el CSV real; pendiente de su primera semana en la Pi |
@@ -58,6 +61,34 @@ Lo que se investigó y comprobó el 21/11/2026:
 | **Alertas de Keepa** | Aviso cuando un producto baja de tu umbral o vuelve el stock | Posible (pendiente) | Gratis por correo, Telegram, notificaciones web o su app ([ayuda](https://keepa.com/#!support)). Sus [condiciones](https://keepa.com/#!terms) prohíben el scraping, pero no "una funcionalidad que el propio proveedor ofrece para ese fin" |
 | **Alertas de CamelCamelCamel** | Lo mismo, por correo | No | Sus [condiciones](https://es.camelcamelcamel.com/tos) prohíben la recogida automática de datos "from our website and/or emails" |
 | **Keepa API** | Histórico completo | No | Es de pago |
+
+### Tiendas españolas (comprobado el 21/11/2026)
+
+| Tienda | ¿Se puede leer el precio? | Cómo | Historial | Por qué |
+|---|---|---|---|---|
+| **Powerplanet** | ✅ Sí | Datos estructurados schema.org (JSON-LD) de la ficha: precio, stock, condición, vendedor y EAN. Una petición, sin navegador | No | Su robots.txt permite las fichas |
+| **MediaMarkt** | ✅ Sí | Igual, JSON-LD de la ficha. Muestra si lo vende MediaMarkt o un vendedor externo del marketplace | No | Su robots.txt lo permite todo. Sus [condiciones de uso](https://www.mediamarkt.es/es/legal/condiciones-de-uso-de-la-web) prohíben copiar contenidos "para propósitos públicos o comerciales" y saltarse medidas de seguridad: un aviso privado no hace ninguna de las dos cosas |
+| **Tienda oficial de Dreame** (Shopify) | ✅ Sí | El JSON público del producto (`/products/<ficha>.js`): precio, stock y EAN | No | Su robots.txt permite `/products/` |
+| **PcComponentes** | ❌ No | — | Existe, pero su robots.txt lo prohíbe (`Disallow: /a/*/historicprices`) | Sirve un desafío de Cloudflare ("Un momento…", HTTP 403) a peticiones directas y a un navegador real automatizado. No se intenta superar: va como enlace en las tarjetas para que lo mires tú. Su [aviso legal](https://www.pccomponentes.com/aviso-legal) prohíbe explotar sus contenidos sin autorización y eludir sus protecciones |
+| **Tienda de Xiaomi** (mi.com) | ❌ No | — | No | La ficha no publica el precio en datos estructurados. Va como enlace |
+
+Para no comparar churras con merinas, **cada ficha se comprueba con el EAN** del
+producto. Si una tienda tiene otra variante u otro color, da error en vez de
+colar un precio que no toca. Por eso la ficha de MediaMarkt que parece la R20 SE-A
+no se usa: su EAN (…568) no es el de la R20 SE-A (…575).
+
+**Descubrimiento en estas tiendas:** no hay una vía autorizada hoy.
+
+- **MediaMarkt:** sus páginas de ofertas no publican la lista de productos en
+  datos estructurados; los precios llegan por su API interna (`/api/v1/graphql`),
+  que no es pública.
+- **PcComponentes:** bloquea la lectura, y sus API de búsqueda y de precio están
+  prohibidas en su robots.txt.
+- **Vía oficial posible:** PcComponentes y Powerplanet tienen programa de
+  afiliados en [Awin](https://ui.awin.com/merchant-profile-terms/20982), y Awin
+  ofrece a los afiliados aceptados feeds de producto con precio y stock.
+  Powerplanet anuncia un feed automatizado. Requiere darse de alta y ser
+  aceptado, así que queda pendiente de tu decisión.
 
 ### Alertas de Keepa (opcional)
 
@@ -117,7 +148,7 @@ vuelta y lo valida entero.
 | `seguimiento.lectura_extra_min_entre` | `60` | Mínimo de minutos entre lecturas extra |
 | `seguimiento.reglas.bajada_pct` / `bajada_eur` | `5` / `10` | Bajada que merece aviso: 5 % **o** 10 € |
 | `seguimiento.reglas.min_observaciones_minimo` / `min_dias_minimo` | `10` / `14` | Historial que hace falta para un mínimo local |
-| `productos[]` | Xiaomi G20 | `asin`, `nombre`, `categoria`, `precio_objetivo` y, opcionalmente, `bajada_pct` y `bajada_eur` propios |
+| `productos[]` | G20, U20 y R20 SE-A | `id`, `nombre`, `categoria`, `precio_objetivo`, `ean`, `tiendas` (cada una con `tienda` y `asin` o `url`) y `enlaces` (tiendas que solo se enlazan). Opcionalmente, `bajada_pct` y `bajada_eur` propios. El formato antiguo (solo `asin`) sigue valiendo |
 | `descubrimiento.activo` | `true` | Activa el modo 2 |
 | `descubrimiento.fuentes.chollomazon` | cada 60 min, datos de menos de 48 h | Fuente de ofertas |
 | `descubrimiento.categorias` | Electrónica, Informática, Hogar | Categorías principales de CholloMazon (o `"Hogar > Cocina"` para una subcategoría) |
@@ -140,6 +171,44 @@ subcategoría, como "Hogar > Cocina".
 Los secretos van en `.env` ([`.env.example`](.env.example)), nunca en el
 JSON.
 
+### Un producto en varias tiendas
+
+```json
+{
+  "id": "dreame-u20",
+  "nombre": "Dreame U20",
+  "categoria": "Aspiradoras",
+  "precio_objetivo": 100.0,
+  "ean": "6976233670607",
+  "tiendas": [
+    {"tienda": "Dreame", "url": "https://es.dreametech.com/products/aspirador-sin-cable-u20"},
+    {"tienda": "MediaMarkt", "url": "https://www.mediamarkt.es/es/product/_aspirador-escoba-dreame-308668681-370-w-60-min-negro-139804042.html"}
+  ],
+  "enlaces": [
+    {"tienda": "PcComponentes", "url": "https://www.pccomponentes.com/dreame-u20-aspiradora-escoba-mano-sin-cable-370w-blanca"}
+  ]
+}
+```
+
+El bot deduce cómo leer cada tienda:
+
+- `asin`: Amazon.
+- URL con `/products/`: Shopify.
+- El resto: JSON-LD.
+
+Si una tienda se bloquea (403, 429, desafío), se registra como fallo y se
+reintenta más tarde, sin insistir. Para comparar solo cuentan las lecturas
+recientes (menos de dos intervalos).
+
+**Cómo decide con varias tiendas:**
+
+- **Precio que cuenta:** el más bajo con unidades nuevas.
+- **Bajada:** se mide frente al mejor precio anterior entre todas las tiendas.
+- **Mínimo registrado:** el más bajo visto en cualquiera de sus tiendas.
+- **Reposición:** que vuelva a haber unidades en alguna.
+- **Tarjeta:** lleva el botón a la tienda más barata, el resto de tiendas con
+  su precio y botones para las tiendas que solo se enlazan.
+
 ### Añadir y quitar productos
 
 ```bash
@@ -149,8 +218,11 @@ docker compose exec silla-sihoo-bot python3 -m vigilante listar
 docker compose exec silla-sihoo-bot python3 -m vigilante estado
 ```
 
-Se valida el ASIN (solo `amazon.es`) y no se admiten duplicados. Al quitar un
-producto, su histórico se conserva.
+`anadir` añade un producto solo de Amazon. Para varias tiendas, edita
+`data/config.json` como en el ejemplo de arriba. Se valida el ASIN (solo
+`amazon.es`), el formato de cada tienda y que no haya duplicados. `quitar`
+acepta el `id` del producto o su ASIN. Al quitar un producto, su histórico se
+conserva.
 
 ## Cómo decide
 
@@ -304,7 +376,7 @@ En `data/`, en la propia Pi:
 python -m unittest discover -s tests -v
 ```
 
-Son 52 pruebas sin red. Cubren:
+Son 63 pruebas sin red. Cubren:
 
 - **Lectura de la ficha:** producto y variante correctos, precio de oferta
   frente al tachado y las cuotas, decimales con coma, página sin precio,
@@ -321,6 +393,11 @@ Son 52 pruebas sin red. Cubren:
   - avisos desde la primera descarga e intervalo de la fuente;
   - comprobación en Amazon, límites y los tres niveles;
   - lectura extra de los productos que sigues.
+- **Varias tiendas:** JSON-LD de Powerplanet y MediaMarkt, Shopify, EAN de otra
+  variante rechazado, segunda mano, desafío anti-bots, PcComponentes solo como
+  enlace, mejor precio entre tiendas y bajada medida contra él, lecturas
+  antiguas, reposición en cualquier tienda y la primera pasada sin avisos
+  falsos.
 - **Configuración y avisos:** actualización de la configuración antigua,
   formato de Telegram y Discord, foto rechazada, el 429 de Discord y migración
   idempotente.

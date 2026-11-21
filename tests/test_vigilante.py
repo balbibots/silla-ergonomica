@@ -13,11 +13,11 @@ from pathlib import Path
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "x")
 os.environ.setdefault("TELEGRAM_CHAT_ID", "1")
 
-from vigilante import amazon, config, descubrimiento, fuentes, historial_amazon, notificadores, reglas, seguimiento  # noqa: E402
+from vigilante import amazon, config, descubrimiento, fuentes, historial_amazon, notificadores, reglas, seguimiento, tiendas  # noqa: E402
 from vigilante.almacen import Almacen  # noqa: E402
 from vigilante.modelo import (Observacion, Producto, a_centimos, asin_desde, eur,  # noqa: E402
                               hora_madrid)
-from vigilante.tarjeta import LIMITE_CAPTION, Tarjeta, a_discord, a_telegram  # noqa: E402
+from vigilante.tarjeta import LIMITE_CAPTION, Tarjeta, a_discord, a_telegram, boton_telegram  # noqa: E402
 
 ASIN = "B0DJ82JKFL"
 T0 = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
@@ -191,6 +191,8 @@ def configuracion(tmp, **cambios):
     cfg = config.ejemplo()
     cfg["canal"] = "consola"
     cfg["seguimiento"]["pausa_entre_amazon_seg"] = 0
+    cfg["productos"] = [{"asin": ASIN, "nombre": "Xiaomi G20", "categoria": "Aspiradoras",
+                         "precio_objetivo": 125.0}]
     for k, v in cambios.items():
         cfg[k] = v
     return cfg
@@ -205,7 +207,7 @@ class Seguimiento(unittest.TestCase):
         self.canal = notificadores.Consola(salida=lambda *_: None)
         self.precio = [14500]
 
-    def lector(self, p):
+    def lector(self, p, _producto=None):
         if self.precio[0] is None:
             return Observacion(p.clave, T0, "amazon_ficha", disponible=False, otra_condicion="usado",
                                precio_otra_condicion_cent=13775)
@@ -273,10 +275,10 @@ class Seguimiento(unittest.TestCase):
                 raise notificadores.ErrorEnvio("sin red")
         seguimiento.ciclo(self.cfg, self.almacen, Caido(), ahora=T0 + timedelta(hours=13),
                           lector=self.lector, dormir=lambda s: None)
-        self.assertIn("aviso_pendiente", self.almacen.estado(ASIN))
+        self.assertIn("aviso_pendiente", self.almacen.estado("producto:" + ASIN))
         self.vuelta(14)  # no le toca leer, pero si reenviar
         self.assertEqual([t.tipo for t in self.canal.enviadas], ["bajada"])
-        self.assertNotIn("aviso_pendiente", self.almacen.estado(ASIN))
+        self.assertNotIn("aviso_pendiente", self.almacen.estado("producto:" + ASIN))
 
     def test_csv_compatible_sigue_creciendo(self):
         self.vuelta(0)
@@ -417,7 +419,10 @@ class Configuracion(unittest.TestCase):
         self.assertEqual(asin, "B0G5WQ65P2")
         with self.assertRaises(config.ErrorConfig):
             config.anadir_producto(nuevo, "B0G5WQ65P2", None, None, None)
-        self.assertEqual(len(config.quitar_producto(nuevo, "B0G5WQ65P2")["productos"]), 1)
+        self.assertEqual(len(config.quitar_producto(nuevo, "B0G5WQ65P2")["productos"]), len(cfg["productos"]))
+        with self.assertRaises(config.ErrorConfig, msg="la G20 ya esta, aunque sea en varias tiendas"):
+            config.anadir_producto(cfg, "B0DJ82JKFL", None, None, None)
+        self.assertEqual(len(config.quitar_producto(cfg, "dreame-u20")["productos"]), len(cfg["productos"]) - 1)
 
     def test_validacion(self):
         cfg = json.loads(config.EJEMPLO.read_text(encoding="utf-8"))
@@ -452,9 +457,13 @@ class Configuracion(unittest.TestCase):
         ruta = tmp / "config.json"
         ruta.write_text(json.dumps(v1), encoding="utf-8")
         cfg = config.cargar(ruta)
-        self.assertEqual(cfg["version"], 3)
+        self.assertEqual(cfg["version"], 4)
         self.assertEqual(cfg["seguimiento"]["intervalo_min_por_fuente"]["amazon_ficha"], 120)
-        self.assertEqual(cfg["productos"], v1["productos"], "tus productos no se tocan")
+        g20 = cfg["productos"][0]
+        self.assertEqual((g20["id"], g20["nombre"], g20["precio_objetivo"]), (ASIN, "Mi G20", 120.0),
+                         "tu G20 conserva nombre y objetivo")
+        self.assertEqual([t["tienda"] for t in g20["tiendas"]], ["Amazon", "Powerplanet", "MediaMarkt"])
+        self.assertEqual([p["id"] for p in cfg["productos"][1:]], ["dreame-u20", "dreame-r20-se-a"])
         self.assertEqual(cfg["descubrimiento"]["categorias"], ["Electrónica"], "tus ajustes se conservan")
         self.assertTrue(cfg["descubrimiento"]["activo"])
         self.assertNotIn("proveedor", cfg["descubrimiento"])
@@ -614,13 +623,160 @@ class Descubrimiento(unittest.TestCase):
         self.a.guardar_estado("B0AAAAAAA2", est)
         leidos = []
         seguimiento.ciclo(cfg, self.a, self.canal, ahora=T0, dormir=lambda s: None,
-                          lector=lambda p: (leidos.append(p.clave), Observacion(p.clave, T0, "amazon_ficha", precio_cent=5590))[1])
+                          lector=lambda t, p: (leidos.append(t.clave), Observacion(t.clave, T0, "amazon_ficha", precio_cent=5590))[1])
         self.assertEqual(leidos, ["B0AAAAAAA2"], "se lee aunque no le tocaba por intervalo")
         self.assertNotIn("leer_ya", self.a.estado("B0AAAAAAA2"))
 
 
 def iso_z(f):
     return f.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+EAN_G20 = "6941812791936"
+
+
+def ficha_jsonld(precio="159.95", ean=EAN_G20, disponibilidad="InStock", vendedor="Powerplanet",
+                 condicion="NewCondition", envoltorio="grupo"):
+    """Como la de Powerplanet (ProductGroup.hasVariant) o MediaMarkt (BuyAction.object)."""
+    producto = {"@type": "Product", "name": "Xiaomi Vacuum Cleaner G20 <Blanco>", "gtin13": ean,
+                "image": ["https://img.example/g20.jpg"],
+                "offers": [{"@type": "Offer", "price": precio, "priceCurrency": "EUR",
+                            "itemCondition": "https://schema.org/" + condicion,
+                            "availability": "https://schema.org/" + disponibilidad,
+                            "seller": {"@type": "Organization", "name": vendedor}}]}
+    if envoltorio == "grupo":
+        datos = {"@context": "https://schema.org", "@type": "ProductGroup", "hasVariant": [producto]}
+    else:
+        datos = {"@context": "https://schema.org/", "@type": "BuyAction", "object": producto}
+    return ('<script type="application/ld+json">{"@type":"OnlineStore","name":"x"}</script>'
+            '<script data-rh="true" type="application/ld+json">%s</script>' % json.dumps(datos))
+
+
+class Tiendas(unittest.TestCase):
+    def tienda(self, nombre="Powerplanet", url="https://www.powerplanetonline.com/es/xiaomi-vacuum-cleaner-g20-blanco"):
+        return config._tienda({"tienda": nombre, "url": url})
+
+    def test_jsonld_powerplanet_y_mediamarkt(self):
+        o = tiendas.analizar_jsonld(ficha_jsonld(), self.tienda(), EAN_G20)
+        self.assertEqual((o.precio_cent, o.disponible, o.vendedor), (15995, True, "Powerplanet"))
+        self.assertEqual(o.imagen, "https://img.example/g20.jpg")
+        mm = self.tienda("MediaMarkt", "https://www.mediamarkt.es/es/product/_g20-148640073.html")
+        o = tiendas.analizar_jsonld(ficha_jsonld(180.27, vendedor="Tek4life-ES", envoltorio="buy"), mm, EAN_G20)
+        self.assertEqual((o.precio_cent, o.vendedor, o.clave), (18027, "Tek4life-ES", "mediamarkt:_g20-148640073"))
+
+    def test_jsonld_otra_variante_no_cuela(self):
+        with self.assertRaises(tiendas.ErrorTienda):
+            tiendas.analizar_jsonld(ficha_jsonld(ean="6978515257568"), self.tienda(), "6978515257575")
+
+    def test_jsonld_agotado_y_segunda_mano(self):
+        o = tiendas.analizar_jsonld(ficha_jsonld(disponibilidad="OutOfStock"), self.tienda(), EAN_G20)
+        self.assertEqual((o.disponible, o.precio_cent), (False, None))
+        with self.assertRaises(tiendas.ErrorTienda, msg="el precio de 2a mano no es el de nuevo"):
+            tiendas.analizar_jsonld(ficha_jsonld(condicion="UsedCondition"), self.tienda(), EAN_G20)
+        with self.assertRaises(tiendas.ErrorTienda):
+            tiendas.analizar_jsonld("<html>sin datos</html>", self.tienda(), EAN_G20)
+
+    def test_shopify_por_ean(self):
+        t = config._tienda({"tienda": "Dreame", "url": "https://es.dreametech.com/products/aspirador-sin-cable-u20"})
+        self.assertEqual((t.lector, t.clave), ("shopify", "dreame:aspirador-sin-cable-u20"))
+        texto = json.dumps({"title": "Dreame U20", "featured_image": "//cdn.shopify.com/u20.jpg", "variants": [
+            {"id": 1, "barcode": "111", "price": 5000, "available": True},
+            {"id": 2, "barcode": "6976233670607", "price": 19900, "available": False}]})
+        o = tiendas.analizar_shopify(texto, t, "6976233670607")
+        self.assertEqual((o.disponible, o.precio_cent, o.imagen), (False, None, "https://cdn.shopify.com/u20.jpg"))
+        texto = texto.replace('"available": false', '"available": true')
+        self.assertEqual(tiendas.analizar_shopify(texto, t, "6976233670607").precio_cent, 19900)
+
+    def test_desafio_anti_bots_no_es_un_precio(self):
+        self.assertTrue(tiendas.DESAFIO.search("<title>Just a moment...</title>"))
+        self.assertTrue(tiendas.DESAFIO.search('<script src="/cdn-cgi/challenge-platform/h/b">'))
+
+    def test_pccomponentes_solo_como_enlace(self):
+        with self.assertRaises(ValueError):
+            config._tienda({"tienda": "PcComponentes", "url": "https://www.pccomponentes.com/dreame-u20"})
+        cfg = config.ejemplo()
+        cfg["productos"][1]["tiendas"].append({"tienda": "PcComponentes", "url": "https://www.pccomponentes.com/x"})
+        with self.assertRaises(config.ErrorConfig):
+            config.validar(cfg)
+
+
+class VariasTiendas(unittest.TestCase):
+    """La G20 en Amazon, Powerplanet y MediaMarkt: cuenta el mejor precio con stock."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        os.environ["HISTORY_FILE"] = str(self.tmp / "historico_precios.csv")
+        self.a = Almacen(self.tmp / "precios.db")
+        self.cfg = configuracion(None)
+        self.cfg["productos"] = [config.ejemplo()["productos"][0]]  # la G20 de ejemplo, 3 tiendas
+        self.canal = notificadores.Consola(salida=lambda *_: None)
+        self.precios = {"Amazon": None, "Powerplanet": 15995, "MediaMarkt": 18027}
+
+    def lector(self, t, p):
+        precio = self.precios[t.nombre]
+        if isinstance(precio, Exception):
+            raise precio
+        return Observacion(t.clave, T0, t.lector, disponible=precio is not None, precio_cent=precio,
+                           vendedor={"MediaMarkt": "Tek4life-ES"}.get(t.nombre, t.nombre))
+
+    def vuelta(self, horas):
+        return seguimiento.ciclo(self.cfg, self.a, self.canal, ahora=T0 + timedelta(hours=horas),
+                                 lector=self.lector, dormir=lambda s: None)
+
+    def test_primera_vez_no_avisa_de_una_reposicion_falsa(self):
+        est = self.a.estado(ASIN)  # venia agotada en Amazon (formato antiguo)
+        est["disponible"] = False
+        self.a.guardar_estado(ASIN, est)
+        self.vuelta(0)
+        self.assertEqual(self.canal.enviadas, [], "Powerplanet siempre tuvo stock: no es una reposicion")
+        est_p = self.a.estado("producto:" + ASIN)
+        self.assertEqual((est_p["mejor_precio_cent"], est_p["mejor_tienda"]), (15995, "Powerplanet"))
+
+    def test_bajada_en_otra_tienda_con_comparacion_y_enlaces(self):
+        self.vuelta(0)
+        self.precios["MediaMarkt"] = 14000
+        self.vuelta(2)
+        self.assertEqual(len(self.canal.enviadas), 1)
+        t = self.canal.enviadas[0]
+        self.assertEqual((t.tipo, t.precio_cent, t.boton), ("bajada", 14000, "🛒 Ver en MediaMarkt"))
+        self.assertIn("mediamarkt.es", t.url)
+        self.assertEqual(t.referencia_cent, 15995, "antes: el mejor precio anterior, de otra tienda")
+        self.assertIn("vendido por Tek4life-ES", t.disponibilidad)
+        self.assertTrue(any("Powerplanet 159,95 €" in n and "Amazon sin stock" in n for n in t.notas))
+        self.assertEqual([e[0] for e in t.enlaces], ["PcComponentes (color beige)", "Xiaomi"])
+        botones = boton_telegram(t)["inline_keyboard"]
+        self.assertEqual(botones[0][0]["text"], "🛒 Ver en MediaMarkt")
+        self.assertEqual([b["text"] for b in botones[1]], ["🔗 PcComponentes (color beige)", "🔗 Xiaomi"])
+        self.assertIn("[PcComponentes (color beige)](https://www.pccomponentes.com/",
+                      a_discord(t)["embeds"][0]["description"])
+
+    def test_leer_una_tienda_mas_cara_no_es_una_bajada(self):
+        self.vuelta(0)
+        self.precios["Powerplanet"] = 15995
+        self.vuelta(2)
+        self.vuelta(4)
+        self.assertEqual(self.canal.enviadas, [])
+
+    def test_lecturas_antiguas_no_cuentan(self):
+        self.vuelta(0)
+        self.precios["Powerplanet"] = tiendas.BloqueoTienda("HTTP 429")
+        for h in (2, 4, 6, 8, 10, 12):
+            self.vuelta(h)
+        sit = {s["tienda"].nombre: s for s in seguimiento.situacion(
+            config.productos(self.cfg)[0], self.a, self.cfg["seguimiento"], T0 + timedelta(hours=12))}
+        self.assertFalse(sit["Powerplanet"]["reciente"], "una lectura de hace 12 h ya no vale")
+        self.assertEqual(self.a.estado("producto:" + ASIN)["mejor_tienda"], "MediaMarkt")
+        self.assertEqual(self.a.serie("powerplanet:xiaomi-vacuum-cleaner-g20-blanco")[-1][1], 15995,
+                         "el fallo no pisa el ultimo precio bueno")
+
+    def test_reposicion_en_cualquier_tienda_y_objetivo(self):
+        self.precios.update(Powerplanet=None, MediaMarkt=None)
+        self.vuelta(0)
+        self.precios["MediaMarkt"] = 12400
+        self.vuelta(2)
+        t = self.canal.enviadas[-1]
+        self.assertEqual(t.tipo, "objetivo")
+        self.assertIn("📦 Vuelve a haber unidades nuevas", t.notas)
 
 
 if __name__ == "__main__":

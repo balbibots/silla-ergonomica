@@ -47,6 +47,7 @@ class Tarjeta:
     imagen: str | None = None
     asin: str | None = None
     boton: str = "🛒 Ver en Amazon"
+    enlaces: list = field(default_factory=list)  # [(texto, url)]: otras tiendas para mirar
 
     @property
     def emoji(self) -> str:
@@ -127,7 +128,14 @@ def a_telegram(t: Tarjeta) -> str:
 
 
 def boton_telegram(t: Tarjeta) -> dict:
-    return {"inline_keyboard": [[{"text": t.boton, "url": t.url}]]}
+    """Boton principal y, debajo, uno por cada tienda que conviene mirar a mano."""
+    filas = [[{"text": t.boton, "url": t.url}]]
+    otros = [{"text": "🔗 %s" % texto, "url": url} for texto, url in t.enlaces[:4]]
+    if otros:
+        filas.append(otros[:2])
+        if otros[2:]:
+            filas.append(otros[2:])
+    return {"inline_keyboard": filas}
 
 
 # -------------------------------------------------------------------- Discord
@@ -138,6 +146,8 @@ def a_discord(t: Tarjeta) -> dict:
     lineas = t.lineas(lambda s: "**%s**" % s, lambda s: "~~%s~~" % s)
     pie_txt = lineas.pop() if (t.fuente or t.condiciones) else ""
     descripcion = "\n".join(lineas) + "\n\n[%s](%s)" % (t.boton, t.url)
+    if t.enlaces:
+        descripcion += "\n🔗 Mira también: " + " · ".join("[%s](%s)" % (e[0], e[1]) for e in t.enlaces)
     embed = {
         "title": ("%s %s" % (t.emoji, t.encabezado))[:256],
         "url": t.url,
@@ -157,6 +167,8 @@ def a_texto(t: Tarjeta) -> str:
     l = t.lineas(lambda s: s, lambda s: "~%s~" % s)
     partes = ["%s %s" % (t.emoji, t.encabezado.upper()), t.nombre, ""] + l
     partes.append("[%s] %s" % (t.boton, t.url))
+    for texto, url in t.enlaces:
+        partes.append("[🔗 %s] %s" % (texto, url))
     if t.imagen:
         partes.append("(imagen: %s)" % t.imagen)
     return "\n".join(partes)

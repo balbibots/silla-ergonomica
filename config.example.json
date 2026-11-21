@@ -1,11 +1,12 @@
 {
-  "version": 3,
+  "version": 4,
   "canal": "telegram",
   "seguimiento": {
     "activo": true,
     "intervalo_min_por_fuente": {
       "amazon_ficha": 120,
-      "shopify": 360
+      "jsonld": 120,
+      "shopify": 120
     },
     "lectura_extra_min_entre": 60,
     "pausa_entre_amazon_seg": 60,
@@ -23,10 +24,76 @@
   },
   "productos": [
     {
-      "asin": "B0DJ82JKFL",
+      "id": "B0DJ82JKFL",
       "nombre": "Xiaomi G20",
       "categoria": "Aspiradoras",
-      "precio_objetivo": 125.0
+      "precio_objetivo": 125.0,
+      "ean": "6941812791936",
+      "tiendas": [
+        {
+          "tienda": "Amazon",
+          "asin": "B0DJ82JKFL"
+        },
+        {
+          "tienda": "Powerplanet",
+          "url": "https://www.powerplanetonline.com/es/xiaomi-vacuum-cleaner-g20-blanco"
+        },
+        {
+          "tienda": "MediaMarkt",
+          "url": "https://www.mediamarkt.es/es/product/_aspirador-escoba-xiaomi-g20-460-w-60-min-blanco-148640073.html"
+        }
+      ],
+      "enlaces": [
+        {
+          "tienda": "PcComponentes",
+          "url": "https://www.pccomponentes.com/xiaomi-vacuum-cleaner-g20-aspiradora-escoba-mano-sin-cable-460w-beige",
+          "nota": "color beige"
+        },
+        {
+          "tienda": "Xiaomi",
+          "url": "https://www.mi.com/es/product/xiaomi-vacuum-cleaner-g20/"
+        }
+      ]
+    },
+    {
+      "id": "dreame-u20",
+      "nombre": "Dreame U20",
+      "categoria": "Aspiradoras",
+      "precio_objetivo": 100.0,
+      "ean": "6976233670607",
+      "tiendas": [
+        {
+          "tienda": "Dreame",
+          "url": "https://es.dreametech.com/products/aspirador-sin-cable-u20"
+        },
+        {
+          "tienda": "MediaMarkt",
+          "url": "https://www.mediamarkt.es/es/product/_aspirador-escoba-dreame-308668681-370-w-60-min-negro-139804042.html"
+        }
+      ],
+      "enlaces": [
+        {
+          "tienda": "PcComponentes",
+          "url": "https://www.pccomponentes.com/dreame-u20-aspiradora-escoba-mano-sin-cable-370w-blanca"
+        }
+      ]
+    },
+    {
+      "id": "dreame-r20-se-a",
+      "nombre": "Dreame R20 SE-A",
+      "categoria": "Aspiradoras",
+      "precio_objetivo": 140.0,
+      "ean": "6978515257575",
+      "tiendas": [
+        {
+          "tienda": "Amazon",
+          "asin": "B0FY784L7H"
+        },
+        {
+          "tienda": "Dreame",
+          "url": "https://es.dreametech.com/products/aspirador-sin-cable-r20-se-a"
+        }
+      ]
     }
   ],
   "descubrimiento": {
@@ -38,8 +105,15 @@
         "max_antiguedad_horas": 48
       }
     },
-    "horario": {"desde": "08:00", "hasta": "23:00"},
-    "categorias": ["Electrónica", "Informática", "Hogar"],
+    "horario": {
+      "desde": "08:00",
+      "hasta": "23:00"
+    },
+    "categorias": [
+      "Electrónica",
+      "Informática",
+      "Hogar"
+    ],
     "excluir_categorias": [],
     "marcas": [],
     "palabras_clave": [],

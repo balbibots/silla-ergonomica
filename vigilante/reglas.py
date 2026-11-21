@@ -89,8 +89,11 @@ def minimo_365(ext: tuple[datetime, list[tuple[datetime, int]]] | None,
 def evaluar(obs: Observacion, producto: Producto, serie_previa: list[tuple[datetime, int]],
             estado: dict, reglas: dict, ahora: datetime,
             ext: tuple[datetime, list[tuple[datetime, int]]] | None = None,
-            lecturas: list[datetime] | None = None) -> Resultado:
-    """serie_previa: lecturas validas ANTERIORES a obs (misma serie comparable)."""
+            lecturas: list[datetime] | None = None, anterior="serie") -> Resultado:
+    """serie_previa: lecturas validas ANTERIORES a obs (misma serie comparable).
+    anterior: precio con el que se mide la bajada. Por defecto, la ultima
+    lectura de la serie; con varias tiendas, el mejor precio anterior entre
+    todas (None si no lo habia)."""
     estado = dict(estado)
     if not obs.disponible or obs.precio_cent is None:
         estado["disponible"] = False
@@ -113,7 +116,10 @@ def evaluar(obs: Observacion, producto: Producto, serie_previa: list[tuple[datet
         elif pagar > objetivo:
             estado["objetivo_alcanzado"] = False
 
-    previo = serie_previa[-1][1] if serie_previa else None
+    if anterior == "serie":
+        previo = serie_previa[-1][1] if serie_previa else None
+    else:
+        previo = anterior
     if previo is not None and precio < previo:
         dif = previo - precio
         pct = producto.bajada_pct if producto.bajada_pct is not None else reglas["bajada_pct"]
