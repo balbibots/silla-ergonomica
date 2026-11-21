@@ -1,12 +1,12 @@
 {
-  "version": 5,
+  "version": 6,
   "canal": "telegram",
   "seguimiento": {
     "activo": true,
     "intervalo_min_por_fuente": {
       "amazon_ficha": 120,
-      "jsonld": 120,
-      "shopify": 120
+      "jsonld": 30,
+      "shopify": 30
     },
     "lectura_extra_min_entre": 60,
     "pausa_entre_amazon_seg": 60,
@@ -55,7 +55,17 @@
           "tienda": "Xiaomi",
           "url": "https://www.mi.com/es/product/xiaomi-vacuum-cleaner-g20/"
         }
-      ]
+      ],
+      "en_comunidad": {
+        "incluir": [
+          "xiaomi g20",
+          "vacuum cleaner g20"
+        ],
+        "excluir": [
+          "lite",
+          "max"
+        ]
+      }
     },
     {
       "id": "dreame-u20",
@@ -77,7 +87,13 @@
           "tienda": "PcComponentes",
           "url": "https://www.pccomponentes.com/dreame-u20-aspiradora-escoba-mano-sin-cable-370w-blanca"
         }
-      ]
+      ],
+      "en_comunidad": {
+        "incluir": [
+          "dreame u20"
+        ],
+        "excluir": []
+      }
     },
     {
       "id": "dreame-r20-se-a",
@@ -93,7 +109,15 @@
           "tienda": "Dreame",
           "url": "https://es.dreametech.com/products/aspirador-sin-cable-r20-se-a"
         }
-      ]
+      ],
+      "en_comunidad": {
+        "incluir": [
+          "r20 se-a",
+          "r20 sea",
+          "r20 se a"
+        ],
+        "excluir": []
+      }
     }
   ],
   "descubrimiento": {
@@ -114,7 +138,13 @@
       "desde": "08:00",
       "hasta": "23:00"
     },
-    "categorias": [],
+    "categorias": [
+      "Electrónica",
+      "Informática",
+      "Gaming",
+      "Hogar",
+      "Herramientas"
+    ],
     "excluir_categorias": [],
     "marcas": [],
     "palabras_clave": [],
@@ -129,7 +159,7 @@
     },
     "oferta_interesante": {
       "descuento_min_pct": 70,
-      "ahorro_min_eur": 10
+      "ahorro_min_eur": 30
     },
     "minimo_local": {
       "min_observaciones": 5,
@@ -149,13 +179,18 @@
         "precio erróneo",
         "precio erroneo",
         "error en el precio",
-        "glitch",
-        "preciazo",
-        "precio de risa"
+        "glitch"
       ],
       "descuento_min_pct": 70,
-      "ahorro_min_eur": 10,
-      "tiendas": []
+      "ahorro_min_eur": 30,
+      "tiendas": [],
+      "valor_min_eur": 50,
+      "precio_min_error_eur": 10,
+      "categorias": [
+        "Electrónica",
+        "Gaming",
+        "Hogar, vivienda y oficina"
+      ]
     }
   }
 }

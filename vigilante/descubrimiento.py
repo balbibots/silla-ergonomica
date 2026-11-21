@@ -221,7 +221,7 @@ def ejecutar(cfg: dict, almacen: Almacen, notificador, fuentes: list, ahora: dat
         print("Descubrimiento: %s trae %d ofertas" % (fuente.nombre, len(lote)))
 
     hoy = hora_madrid(ahora).replace(hour=0, minute=0, second=0, microsecond=0)
-    enviados = _procesar_comunidad(comunidad, des, almacen, notificador, ahora, hoy, atribuciones)
+    enviados = _procesar_comunidad(comunidad, cfg, almacen, notificador, ahora, hoy, atribuciones)
     if not candidatos:
         return enviados
     hallazgos, vistos = [], set()
@@ -285,20 +285,63 @@ def evaluar_chollo(c, des: dict, ahora: datetime, max_ant: timedelta) -> str | N
         return None
     if com["tiendas"] and c.tienda.lower() not in [t.lower() for t in com["tiendas"]]:
         return None
+    # Solo los temas que te interesan: para ver de todo ya esta Chollometro.
+    if com["categorias"] and (c.categoria or "").lower() not in [k.lower() for k in com["categorias"]]:
+        return None
     if c.precio_cent is not None and c.precio_cent > des["precio_max"] * 100:
         return None
-    if any(k.lower() in texto for k in com["palabras_error"]):
-        return "error_precio"
-    if c.precio_antes_cent and c.precio_cent is not None:
-        ahorro = c.precio_antes_cent - c.precio_cent
-        if ahorro * 100 >= com["descuento_min_pct"] * c.precio_antes_cent and ahorro >= com["ahorro_min_eur"] * 100:
-            return "chollo"
+    # Lo barato no interesa aunque sea un buen descuento: unos peines de 3 EUR o
+    # un polo de 15 EUR rebajado no son un chollo que merezca un aviso.
+    valor_ok = c.precio_antes_cent is not None and c.precio_antes_cent >= com["valor_min_eur"] * 100
+    ahorro = (c.precio_antes_cent - c.precio_cent) if valor_ok and c.precio_cent is not None else 0
+    # Error de precio: solo si la comunidad lo pone en el TITULO (en la
+    # descripcion sale en frases como "me parece un preciazo").
+    titulo = c.titulo.lower()
+    if any(k.lower() in titulo for k in com["palabras_error"]):
+        if c.precio_cent is None:
+            return None
+        if valor_ok and ahorro >= com["ahorro_min_eur"] * 100:
+            return "error_precio"
+        if not c.precio_antes_cent and c.precio_cent >= com["precio_min_error_eur"] * 100:
+            return "error_precio"  # sin precio anterior: al menos que no sea calderilla
+        return None
+    if valor_ok and ahorro * 100 >= com["descuento_min_pct"] * c.precio_antes_cent \
+            and ahorro >= com["ahorro_min_eur"] * 100:
+        return "chollo"
     return None
 
 
-def _procesar_comunidad(lote, des, almacen: Almacen, notificador, ahora, hoy, atribuciones) -> int:
+def producto_en_chollo(c, productos: list[dict]) -> dict | None:
+    """El producto seguido que aparece en el titulo de la publicacion, segun sus
+    palabras 'en_comunidad' (incluir y excluir). Sin palabras, no se busca."""
+    titulo = c.titulo.lower()
+    for p in productos:
+        reglas = p.get("en_comunidad") or {}
+        incluir = [k.lower() for k in reglas.get("incluir", [])]
+        excluir = [k.lower() for k in reglas.get("excluir", [])]
+        if incluir and any(k in titulo for k in incluir) and not any(k in titulo for k in excluir):
+            return p
+    return None
+
+
+def _procesar_comunidad(lote, cfg, almacen: Almacen, notificador, ahora, hoy, atribuciones) -> int:
+    des = cfg["descubrimiento"]
     enviados = 0
     for fuente, c, max_ant in lote:
+        seguido = producto_en_chollo(c, cfg.get("productos", []))
+        if seguido and (not c.publicada or ahora - c.publicada <= max_ant):
+            # Un producto que sigues, en cualquier tienda (tambien las que el bot
+            # no puede leer, como PcComponentes): siempre interesa.
+            clave = "%s:%s" % (fuente.nombre, c.id)
+            if not almacen.aviso_enviado(clave, "comunidad_seguido", c.precio_cent):
+                t = tarjeta_chollo(c, "visto_comunidad", ahora, atribuciones.get(fuente.nombre, ""))
+                t.notas.insert(0, "👀 Es uno de tus productos: %s" % seguido["nombre"])
+                notificador.enviar(t)
+                almacen.registrar_aviso(clave, "comunidad_seguido", c.precio_cent, MODO, notificador.nombre,
+                                        fecha=ahora)
+                enviados += 1
+                print("  seguido en comunidad: %s (%s)" % (c.titulo[:70], c.tienda))
+            continue
         tipo = evaluar_chollo(c, des, ahora, max_ant)
         clave = "%s:%s" % (fuente.nombre, c.id)
         if not tipo or almacen.aviso_enviado(clave, "comunidad_%s" % tipo, c.precio_cent):

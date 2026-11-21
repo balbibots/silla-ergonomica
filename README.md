@@ -23,7 +23,9 @@ logs y a la base de datos.
 |---|---|---|
 | 🏆 **Mínimo histórico verificado · 365 días** | Más barato que cualquier día del último año | Gráfico de 365 días de Amazon (importación opcional, una sola vez), completado con las lecturas del bot |
 | 📊 **Mínimo del histórico local** | Más barato que todo lo que el bot ha visto | Lecturas del propio bot, desde la fecha que indica la tarjeta |
-| 🔥 **Oferta interesante** | Descuento grande frente al precio de referencia que muestra Amazon | CholloMazon. **No es un histórico**, y la tarjeta lo dice |
+| 🔥 **Oferta interesante** / 💥 **Chollazo** | 70 % o más y al menos 30 € frente al precio de referencia de Amazon | CholloMazon. **No es un histórico**, y la tarjeta lo dice |
+| 🚨 **Posible error de precio** | La comunidad lo marca así en el título | Chollometro, cada 5 min. Sale a cualquier hora |
+| 👀 **Tu producto en Chollometro** | Alguien publica uno de tus productos en cualquier tienda (también PcComponentes) | Chollometro, cada 5 min |
 
 Además, para los productos que sigues: 🎯 precio objetivo, 📉 bajada,
 🔁 vuelve a su mínimo y 📦 de nuevo en stock.
@@ -144,18 +146,24 @@ vuelta y lo valida entero.
 | Ajuste | Por defecto | Qué hace |
 |---|---|---|
 | `canal` | `telegram` | `telegram`, `discord` o `consola` (solo escribe en el log) |
-| `seguimiento.intervalo_min_por_fuente` | `amazon_ficha: 120` | Minutos entre lecturas de cada producto |
+| `seguimiento.intervalo_min_por_fuente` | Amazon 120, resto 30 | Minutos entre lecturas de cada producto |
+| `seguimiento.reglas.avisar_cambios` / `cambio_min_eur` | `true` / `1` | Avisa de cada bajada 📉 y subida 📈 del mejor precio de al menos 1 € |
 | `seguimiento.lectura_extra_min_entre` | `60` | Mínimo de minutos entre lecturas extra |
 | `seguimiento.reglas.bajada_pct` / `bajada_eur` | `5` / `10` | Bajada que merece aviso: 5 % **o** 10 € |
 | `seguimiento.reglas.min_observaciones_minimo` / `min_dias_minimo` | `10` / `14` | Historial que hace falta para un mínimo local |
 | `productos[]` | G20, U20 y R20 SE-A | `id`, `nombre`, `categoria`, `precio_objetivo`, `ean`, `tiendas` (cada una con `tienda` y `asin` o `url`) y `enlaces` (tiendas que solo se enlazan). Opcionalmente, `bajada_pct` y `bajada_eur` propios. El formato antiguo (solo `asin`) sigue valiendo |
 | `descubrimiento.activo` | `true` | Activa el modo 2 |
 | `descubrimiento.fuentes.chollomazon` | cada 60 min, datos de menos de 48 h | Fuente de ofertas |
-| `descubrimiento.categorias` | Electrónica, Informática, Hogar | Categorías principales de CholloMazon (o `"Hogar > Cocina"` para una subcategoría) |
+| `descubrimiento.categorias` | Electrónica, Informática, Gaming, Hogar, Herramientas | Tus temas en CholloMazon (o `"Hogar > Cocina"` para una subcategoría) |
+| `descubrimiento.comunidad.categorias` | Electrónica, Gaming, Hogar, vivienda y oficina | Tus temas en Chollometro. El resto (moda, belleza, juguetes, comida...) no avisa |
+| `descubrimiento.comunidad.palabras_error` | "error de precio", "fallo de precio"... | Solo cuentan en el título |
+| `descubrimiento.comunidad.valor_min_eur` / `ahorro_min_eur` / `descuento_min_pct` | 50 / 30 / 70 | Un chollo necesita valer al menos 50 €, ahorrar 30 € y un 70 % |
+| `descubrimiento.comunidad.precio_min_error_eur` | 10 | Un error de precio sin precio anterior tiene que costar al menos esto |
+| `productos[].en_comunidad` | `incluir` / `excluir` | Palabras para reconocer tu producto en Chollometro sin confundir modelos (la G20 excluye "lite" y "max") |
 | `descubrimiento.excluir_categorias`, `marcas`, `palabras_clave`, `excluir_palabras` | vacías | Más filtros |
 | `descubrimiento.precio_min` / `precio_max` | `25` / `600` | Rango de precio |
 | `descubrimiento.avisar` | los tres | Qué niveles se notifican |
-| `descubrimiento.oferta_interesante` | 20 % y 10 € | Descuento mínimo frente al precio de referencia |
+| `descubrimiento.oferta_interesante` | 70 % y 30 € | Descuento mínimo frente al precio de referencia |
 | `descubrimiento.minimo_local` | 5 observaciones, 30 días | Historial que hace falta para un mínimo local de una oferta |
 | `descubrimiento.verificar_en_amazon` | `true` | Comprobar precio, stock nuevo y valoraciones antes de avisar |
 | `descubrimiento.max_verificaciones_dia` | `20` | Fichas de Amazon al día para verificar |
@@ -287,6 +295,27 @@ interesantes no lo necesitan.
 - **Media de 90 días:** solo si hay lecturas en al menos el 90 % de los días.
   Si no, no aparece.
 
+### Chollometro: errores de precio y tus productos
+
+El RSS público de chollos nuevos (`/rss/nuevos`, unas 30 publicaciones cada
+cuarto de hora) se lee cada 5 minutos. Trae título, tienda, precio, categoría,
+foto y la descripción; no trae ASIN ni precio anterior estructurado.
+
+- **🚨 Error de precio:** la comunidad lo dice en el título. Tiene que ser de
+  tus temas y no calderilla (al menos 10 €, o 30 € de ahorro si la publicación
+  da el precio anterior). Sale a cualquier hora.
+- **💥 Chollazo:** la publicación da el precio de antes (tachado, "antes",
+  "PVP"...) y el descuento es del 70 % o más, con al menos 30 € de ahorro sobre
+  algo de 50 € o más. Respeta el horario.
+- **👀 Tu producto:** si el título nombra uno de tus productos (con sus palabras
+  de `en_comunidad`), avisa siempre, en cualquier tienda. Así llegan también
+  las ofertas de PcComponentes, que el bot no puede leer.
+
+Casos reales que ya no avisan: unos mini cepillos de 3,95 € (la descripción
+decía "me parece un preciazo") y un polo infantil de 3,09 € (antes 14,90 €).
+
+La comunidad no verifica precios: la tarjeta lo indica y enlaza la publicación.
+
 ### Formato
 
 ```text
@@ -376,7 +405,7 @@ En `data/`, en la propia Pi:
 python -m unittest discover -s tests -v
 ```
 
-Son 63 pruebas sin red. Cubren:
+Son 70 pruebas sin red. Cubren:
 
 - **Lectura de la ficha:** producto y variante correctos, precio de oferta
   frente al tachado y las cuotas, decimales con coma, página sin precio,
@@ -393,6 +422,9 @@ Son 63 pruebas sin red. Cubren:
   - avisos desde la primera descarga e intervalo de la fuente;
   - comprobación en Amazon, límites y los tres niveles;
   - lectura extra de los productos que sigues.
+- **Chollometro:** formato real del RSS, errores de precio solo en el título,
+  calderilla y temas que no te interesan fuera, chollazos del 70 %, tus
+  productos sin confundir modelos (G20, G20 Lite, G20 Max).
 - **Varias tiendas:** JSON-LD de Powerplanet y MediaMarkt, Shopify, EAN de otra
   variante rechazado, segunda mano, desafío anti-bots, PcComponentes solo como
   enlace, mejor precio entre tiendas y bajada medida contra él, lecturas

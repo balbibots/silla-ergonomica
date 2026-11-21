@@ -20,7 +20,7 @@ from .modelo import Producto, Tienda, a_centimos, asin_desde, url_amazon
 
 RAIZ = Path(__file__).resolve().parent.parent
 EJEMPLO = RAIZ / "config.example.json"
-VERSION = 5
+VERSION = 6
 CANALES = ("telegram", "discord", "consola")
 FUENTES = ("amazon_ficha", "jsonld", "shopify")
 # Tiendas que no dejan leer sus fichas de forma automatica (comprobado el
@@ -42,6 +42,17 @@ G20_ENLACES = [
      "nota": "color beige"},
     {"tienda": "Xiaomi", "url": "https://www.mi.com/es/product/xiaomi-vacuum-cleaner-g20/"},
 ]
+# Temas de interes por defecto (nombres reales de cada fuente, 21/11/2026).
+INTERESES_CHOLLOMETRO = ["Electrónica", "Gaming", "Hogar, vivienda y oficina"]
+INTERESES_CHOLLOMAZON = ["Electrónica", "Informática", "Gaming", "Hogar", "Herramientas"]
+
+# Palabras para reconocer cada producto en los titulos de Chollometro. Las
+# exclusiones evitan confundir modelos parecidos (G20 Lite, G20 Max...).
+EN_COMUNIDAD = {
+    "B0DJ82JKFL": {"incluir": ["xiaomi g20", "vacuum cleaner g20"], "excluir": ["lite", "max"]},
+    "dreame-u20": {"incluir": ["dreame u20"], "excluir": []},
+    "dreame-r20-se-a": {"incluir": ["r20 se-a", "r20 sea", "r20 se a"], "excluir": []},
+}
 PRODUCTOS_V4 = [
     {"id": "dreame-u20", "nombre": "Dreame U20", "categoria": "Aspiradoras", "precio_objetivo": 100.0,
      "ean": "6976233670607",
@@ -148,6 +159,36 @@ def actualizar_esquema(cfg: dict) -> tuple[dict, list[str]]:
         des.setdefault("fuentes", {}).setdefault("chollometro", copy.deepcopy(ejemplo()["descubrimiento"]["fuentes"]["chollometro"]))
         cambios.append("anadidos los chollos y errores de precio de Chollometro (cada 5 min)")
         cfg["version"] = 5
+    if cfg.get("version", 1) < 6:
+        # v6: fuera los chollos de calderilla y los falsos "errores de precio".
+        des = cfg.setdefault("descubrimiento", {})
+        com = des.setdefault("comunidad", {})
+        palabras = com.get("palabras_error", [])
+        com["palabras_error"] = [k for k in palabras if k not in ("preciazo", "precio de risa")]
+        if com.get("ahorro_min_eur", 10) < 30:
+            com["ahorro_min_eur"] = 30
+        com.setdefault("valor_min_eur", 50)
+        com.setdefault("categorias", list(INTERESES_CHOLLOMETRO))
+        if not des.get("categorias"):
+            des["categorias"] = list(INTERESES_CHOLLOMAZON)
+        cambios.append("los chollos se filtran por tus temas: tecnologia, informatica, gaming y hogar")
+        com.setdefault("precio_min_error_eur", 10)
+        oi = des.setdefault("oferta_interesante", {})
+        if oi.get("ahorro_min_eur", 10) < 30:
+            oi["ahorro_min_eur"] = 30
+        cambios.append("chollos con al menos 30 EUR de ahorro sobre productos de 50 EUR o mas; "
+                       "errores de precio solo si lo dice el titulo")
+        for prod in cfg.get("productos", []):
+            pid = prod.get("id") or prod.get("asin")
+            if pid in EN_COMUNIDAD and "en_comunidad" not in prod:
+                prod["en_comunidad"] = copy.deepcopy(EN_COMUNIDAD[pid])
+                cambios.append("la %s se busca tambien en Chollometro" % prod["nombre"])
+        intervalos = cfg.setdefault("seguimiento", {}).setdefault("intervalo_min_por_fuente", {})
+        for lector in ("jsonld", "shopify"):
+            if intervalos.get(lector) in (120, 360):
+                intervalos[lector] = 30
+        cambios.append("Powerplanet, MediaMarkt y Dreame se leen cada 30 min")
+        cfg["version"] = 6
     antes = json.dumps(cfg, sort_keys=True)
     _completar(cfg, ejemplo())
     if json.dumps(cfg, sort_keys=True) != antes:
@@ -216,6 +257,10 @@ def validar(cfg: dict) -> None:
         donde = "productos[%d]" % i
         if not isinstance(p, dict) or not p.get("nombre"):
             raise ErrorConfig("%s necesita al menos un nombre" % donde)
+        ec = p.get("en_comunidad")
+        if ec is not None and not (isinstance(ec, dict) and isinstance(ec.get("incluir", []), list)
+                                   and isinstance(ec.get("excluir", []), list)):
+            raise ErrorConfig("%s.en_comunidad debe tener listas 'incluir' y 'excluir'" % donde)
         try:
             producto = _producto(p)
         except (ValueError, KeyError) as exc:
@@ -255,7 +300,9 @@ def validar(cfg: dict) -> None:
         raise ErrorConfig("Falta la seccion descubrimiento.comunidad")
     _num(com, "descuento_min_pct", "descubrimiento.comunidad")
     _num(com, "ahorro_min_eur", "descubrimiento.comunidad")
-    for k in ("palabras_error", "tiendas"):
+    _num(com, "valor_min_eur", "descubrimiento.comunidad")
+    _num(com, "precio_min_error_eur", "descubrimiento.comunidad")
+    for k in ("palabras_error", "tiendas", "categorias"):
         if not isinstance(com.get(k), list):
             raise ErrorConfig("descubrimiento.comunidad.%s debe ser una lista" % k)
     if des["precio_min"] > des["precio_max"]:

@@ -25,6 +25,7 @@ TIPOS = {
     "subida": ("📈", "Subida de precio", 0x95A5A6),
     "error_precio": ("🚨", "Posible error de precio", 0xE74C3C),
     "chollo": ("💥", "Chollazo", 0xE67E22),
+    "visto_comunidad": ("👀", "Tu producto en Chollometro", 0x1ABC9C),
     "reposicion": ("📦", "De nuevo en stock", 0x9B59B6),
     "oferta": ("🔥", "Oferta interesante", 0xE67E22),
     "aviso_tecnico": ("⚠️", "No puedo leer el precio", 0xE74C3C),

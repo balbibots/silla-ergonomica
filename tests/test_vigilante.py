@@ -458,7 +458,7 @@ class Configuracion(unittest.TestCase):
         ruta = tmp / "config.json"
         ruta.write_text(json.dumps(v1), encoding="utf-8")
         cfg = config.cargar(ruta)
-        self.assertEqual(cfg["version"], 5)
+        self.assertEqual(cfg["version"], 6)
         self.assertEqual(cfg["seguimiento"]["intervalo_min_por_fuente"]["amazon_ficha"], 120)
         g20 = cfg["productos"][0]
         self.assertEqual((g20["id"], g20["nombre"], g20["precio_objetivo"]), (ASIN, "Mi G20", 120.0),
@@ -537,7 +537,7 @@ class Descubrimiento(unittest.TestCase):
         self.cfg = configuracion(None)
         self.cfg["descubrimiento"]["horario"] = None
         # Estas pruebas miden la mecanica con el umbral antiguo (20 %, 3 categorias).
-        self.cfg["descubrimiento"]["oferta_interesante"]["descuento_min_pct"] = 20
+        self.cfg["descubrimiento"]["oferta_interesante"].update(descuento_min_pct=20, ahorro_min_eur=10)
         self.cfg["descubrimiento"]["categorias"] = ["Electrónica", "Informática", "Hogar"]
         self.canal = notificadores.Consola(salida=lambda *_: None)
         self.fuente = FuenteFalsa()
@@ -781,6 +781,58 @@ class VariasTiendas(unittest.TestCase):
         t = self.canal.enviadas[-1]
         self.assertEqual(t.tipo, "objetivo")
         self.assertIn("📦 Vuelve a haber unidades nuevas", t.notas)
+
+
+def chollo(titulo, precio, antes=None, texto="", categoria="Electrónica"):
+    return fuentes.Chollo(id="1", titulo=titulo, tienda="Amazon", precio_cent=precio, url="https://x/1",
+                          publicada=T0, texto=titulo + " " + texto, precio_antes_cent=antes, categoria=categoria)
+
+
+class ChollosComunidad(unittest.TestCase):
+    """Casos reales del 21/11/2026 y los que si deben avisar."""
+
+    def ev(self, c):
+        return descubrimiento.evaluar_chollo(c, config.ejemplo()["descubrimiento"], T0, timedelta(hours=6))
+
+    def test_peines_de_3_euros_no_son_un_error_de_precio(self):
+        c = chollo("Kit 3 mini cepillos pelo Beter", 395,
+                   texto="A 3,95 tres unidades me parece un preciazo")
+        self.assertIsNone(self.ev(c))
+
+    def test_polo_barato_con_79_por_ciento_no_avisa(self):
+        self.assertIsNone(self.ev(chollo("Polo de manga corta French Toast", 309, antes=1490)))
+
+    def test_solo_tus_temas(self):
+        self.assertIsNone(self.ev(chollo("ERROR DE PRECIO: abrigo de marca", 4900, categoria="Moda y accesorios")))
+        self.assertIsNone(self.ev(chollo("Muñeca", 5000, antes=40000, categoria="Juguetes, familia e hijos")))
+        self.assertEqual(self.ev(chollo("Robot aspirador", 9900, antes=69900, categoria="Hogar, vivienda y oficina")),
+                         "chollo")
+
+    def test_error_de_precio_en_el_titulo(self):
+        self.assertEqual(self.ev(chollo("ERROR DE PRECIO: Smart TV 55 pulgadas", 4900)), "error_precio")
+        self.assertIsNone(self.ev(chollo("Error de precio en calcetines", 299)), "calderilla")
+        self.assertIsNone(self.ev(chollo("Cafetera", 4900, texto="quiza sea un error de precio")),
+                          "en la descripcion no cuenta")
+
+    def test_chollazo_de_verdad(self):
+        self.assertEqual(self.ev(chollo("Robot aspirador Roborock", 9900, antes=69900)), "chollo")
+        self.assertIsNone(self.ev(chollo("Roborock Qrevo 2 Pro", 29900, antes=69900)), "57 %: no llega al 70 %")
+
+    def test_tus_productos_en_chollometro_sin_confundir_modelos(self):
+        prods = config.ejemplo()["productos"]
+        en = lambda t: (descubrimiento.producto_en_chollo(chollo(t, 9900), prods) or {}).get("nombre")
+        self.assertEqual(en("Dreame U20 aspiradora sin cable por 99 € en PcComponentes"), "Dreame U20")
+        self.assertEqual(en("Xiaomi Vacuum Cleaner G20 por 119€"), "Xiaomi G20")
+        self.assertIsNone(en("Xiaomi G20 Lite por 59€"))
+        self.assertIsNone(en("Xiaomi G20 Max por 189€"))
+        self.assertEqual(en("Dreame R20 SE-A a 129€"), "Dreame R20 SE-A")
+
+    def test_tarjeta_de_error(self):
+        t = descubrimiento.tarjeta_chollo(chollo("ERROR DE PRECIO: TV", 4900), "error_precio",
+                                          T0 + timedelta(minutes=7), fuentes.CHOLLOMETRO_ATRIBUCION)
+        self.assertEqual((t.tipo, t.boton), ("error_precio", "🔥 Ver el chollo"))
+        self.assertIn("hace 7 min", t.disponibilidad)
+        self.assertIn("🚨", a_telegram(t))
 
 
 if __name__ == "__main__":
