@@ -329,9 +329,10 @@ def _ya_avisado(almacen: Almacen, clave: str, eventos, precio: int | None) -> bo
 
 
 def ejecutar(cfg: dict, almacen: Almacen, notificador, fuentes: list, ahora: datetime,
-             leer=None, dormir=time.sleep, seguidos: set[str] | None = None) -> int:
+             leer=None, dormir=time.sleep, seguidos: set[str] | None = None, juez=None) -> int:
     """fuentes: objetos con nombre, atribucion y candidatos(). leer: lector de la
-    ficha de Amazon para verificar (None = sin verificar)."""
+    ficha de Amazon para verificar (None = sin verificar). juez: busca la
+    historia real de las publicaciones de Chollometro (juez.Juez)."""
     des = cfg["descubrimiento"]
     if not des["activo"]:
         return 0
@@ -371,7 +372,7 @@ def ejecutar(cfg: dict, almacen: Almacen, notificador, fuentes: list, ahora: dat
         print("Descubrimiento: %s trae %d ofertas" % (fuente.nombre, len(lote)))
 
     hoy = hora_madrid(ahora).replace(hour=0, minute=0, second=0, microsecond=0)
-    enviados = _procesar_comunidad(comunidad, cfg, almacen, notificador, ahora, hoy, atribuciones)
+    enviados = _procesar_comunidad(comunidad, cfg, almacen, notificador, ahora, hoy, atribuciones, juez)
     if not candidatos:
         return enviados
     hallazgos, vistos = [], set()
@@ -444,6 +445,9 @@ def evaluar_chollo(c, des: dict, ahora: datetime, max_ant: timedelta) -> str | N
     texto, titulo = c.texto.lower(), c.titulo.lower()
     if c.precio_cent is None or (c.publicada and ahora - c.publicada > max_ant):
         return None
+    # Chollometro solo detecta: sin la historia real del producto no avisa.
+    if c.fuente == "chollometro" and com.get("exigir_historico", True) and not c.ref_hist_cent:
+        return None
     if any(k.lower() in texto for k in des["excluir_palabras"]):
         return None
     if des.get("solo_nuevo", True) and no_es_nuevo(c.titulo):
@@ -505,7 +509,7 @@ def producto_en_chollo(c, productos: list[dict]) -> dict | None:
     return None
 
 
-def _procesar_comunidad(lote, cfg, almacen: Almacen, notificador, ahora, hoy, atribuciones) -> int:
+def _procesar_comunidad(lote, cfg, almacen: Almacen, notificador, ahora, hoy, atribuciones, juez=None) -> int:
     des = cfg["descubrimiento"]
     enviados = 0
     for fuente, c, max_ant in lote:
@@ -525,6 +529,8 @@ def _procesar_comunidad(lote, cfg, almacen: Almacen, notificador, ahora, hoy, at
                 enviados += 1
                 print("  seguido en comunidad: %s (%s)" % (c.titulo[:70], c.tienda))
             continue
+        if c.fuente == "chollometro" and des["comunidad"].get("exigir_historico", True) and juez                 and c.precio_cent is not None and (not c.publicada or ahora - c.publicada <= max_ant)                 and not no_es_nuevo(c.titulo):
+            juez.juzgar(c, ahora)
         tipo = evaluar_chollo(c, des, ahora, max_ant)
         clave = "%s:%s" % (fuente.nombre, c.id)
         if not tipo or _ya_avisado(almacen, clave, ["comunidad_error_precio", "comunidad_chollo",
@@ -574,7 +580,9 @@ def tarjeta_chollo(c, tipo: str, ahora: datetime, atribucion: str) -> Tarjeta:
     if tipo == "error_precio":
         t.notas.append("⚠️ Sin comprobar en la tienda: puede ser un error y durar poco")
     if c.fuente == "chollometro":
-        t.fuente = "Chollometro" + (" · publicado" + _hace(minutos) if minutos is not None else "")
+        t.fuente = "precio según Chollometro" + (" · publicado" + _hace(minutos) if minutos is not None else "")
+        if c.pagina:
+            t.enlaces = [("📈 Historial", c.pagina)]
     elif c.fuente == "pccomtracker":
         t.fuente = "precio comprobado por pccomtracker" + (_hace(minutos) if minutos is not None else "")
     else:

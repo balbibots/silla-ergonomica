@@ -14,7 +14,7 @@ os.environ.setdefault("TELEGRAM_BOT_TOKEN", "x")
 os.environ.setdefault("TELEGRAM_CHAT_ID", "1")
 
 from vigilante import (amazon, config, descubrimiento, fuentes, fuentes_historico, historial_amazon,  # noqa: E402
-                       notificadores, reglas, seguimiento, terceros, tiendas)
+                       juez, notificadores, reglas, seguimiento, terceros, tiendas)
 from vigilante.almacen import Almacen  # noqa: E402
 from vigilante.modelo import (Observacion, Producto, a_centimos, asin_desde, eur,  # noqa: E402
                               hora_madrid, iso)
@@ -1034,8 +1034,19 @@ def chollo(titulo, precio, antes=None, texto="", categoria="Electrónica", real=
 class ChollosComunidad(unittest.TestCase):
     """Casos reales del 21/11/2026 y los que si deben avisar."""
 
-    def ev(self, c):
-        return descubrimiento.evaluar_chollo(c, config.ejemplo()["descubrimiento"], T0, timedelta(hours=6))
+    def ev(self, c, exigir=False):
+        """Mecanica de los niveles. Por defecto sin exigir historia real, que se
+        prueba aparte (test_chollometro_sin_historia_real_no_avisa)."""
+        des = config.ejemplo()["descubrimiento"]
+        des["comunidad"]["exigir_historico"] = exigir
+        return descubrimiento.evaluar_chollo(c, des, T0, timedelta(hours=6))
+
+    def test_chollometro_sin_historia_real_no_avisa(self):
+        for c in (chollo("ERROR DE PRECIO: Smart TV 55 pulgadas", 4900),
+                  chollo("Auriculares Sony WH-1000XM5", 12900, antes=39900),
+                  chollo("Dreame H12 Aspiradora sin cable", 13000, categoria="Hogar, vivienda y oficina")):
+            self.assertIsNone(self.ev(c, exigir=True), c.titulo)
+        self.assertEqual(self.ev(chollo("Auriculares Sony WH-1000XM5", 12900, real=39900), exigir=True), "chollo")
 
     def test_peines_de_3_euros_no_son_un_error_de_precio(self):
         c = chollo("Kit 3 mini cepillos pelo Beter", 395,
@@ -1205,3 +1216,78 @@ class FuentesConHistorico(unittest.TestCase):
                                url="https://x", publicada=self.AHORA, texto=x["titulo"], fuente="reacofertas",
                                precio_antes_cent=x["antes"], ref_hist_cent=x["antes"])
             self.assertIsNone(descubrimiento.evaluar_chollo(c, des, self.AHORA, timedelta(hours=48)), x["titulo"])
+
+
+class JuezChollometro(unittest.TestCase):
+    """Chollometro detecta, la historia real juzga. Caso real: el Newskill
+    Gungnyr TKL Pro Ivory a 33,99 EUR en PcComponentes (24/11/2026), con
+    precio habitual de 130,99 EUR en pccomtracker."""
+
+    AHORA = datetime(2026, 11, 24, 7, 0, tzinfo=timezone.utc)
+    TITULO = "Newskill Gungnyr TKL Pro Ivory Teclado Optomecánico Gaming RGB por 33,99€"
+    SLUGS = ["newskill-gungnyr-tkl-pro-ivory-teclado-optomecanico-gaming-rgb-switches-gateron-red-intercambiables-19101",
+             "newskill-gungnyr-tkl-pro-teclado-optomecanico-gaming-rgb-switches-gateron-red-intercambiables-negro-19100",
+             "newskill-gungnyr-tkl-teclado-mecanico-gaming-rgb-switch-red-19050"]
+
+    def test_tokens_sin_precio(self):
+        self.assertEqual(juez.tokens(self.TITULO), ["newskill", "gungnyr", "tkl", "pro", "ivory", "teclado",
+                                                    "optomecanico", "gaming"])
+
+    def test_elige_la_variante_exacta(self):
+        cands = [(s.replace("-", " "), s) for s in self.SLUGS]
+        self.assertEqual(juez.elegir(self.TITULO, cands), self.SLUGS[0], "Ivory, no el negro ni el TKL a secas")
+        self.assertIsNone(juez.elegir("Newskill Gungnyr TKL Max teclado", cands), "no existe el Max")
+        self.assertEqual(juez.elegir("Newskill Gungnyr TKL teclado mecanico", cands), self.SLUGS[2],
+                         "sin Pro en la publicacion, el Pro es otro modelo")
+        self.assertIsNone(juez.elegir("Samsung Galaxy S24 128GB", cands))
+
+    def _juez(self):
+        cfg = config.ejemplo()
+        a = Almacen(":memory:")
+        pedidas = []
+        sitemap = "".join("<loc>https://pccomtracker.com/producto/%s</loc>" % s for s in self.SLUGS)
+
+        def descargar(url):
+            pedidas.append(url)
+            if url.endswith("/sitemap/0.xml"):
+                return sitemap
+            if "/sitemap/" in url:
+                raise terceros.ErrorTercero("404")
+            if "gungnyr-tkl-pro-ivory" in url:
+                return dato("pccomtracker_ficha_teclado.html")
+            raise terceros.ErrorTercero("404")
+        return juez.Juez(cfg, a, descargar, dormir=lambda s: None), a, pedidas, cfg
+
+    def test_indice_semanal(self):
+        j, a, pedidas, _ = self._juez()
+        self.assertEqual(j.actualizar_indice(self.AHORA), 3)
+        self.assertEqual(j.actualizar_indice(self.AHORA + timedelta(days=2)), 0, "una vez por semana")
+        self.assertEqual(j.buscar_pccomtracker(self.TITULO), "https://pccomtracker.com/producto/" + self.SLUGS[0])
+
+    def test_el_teclado_es_un_chollazo_de_verdad(self):
+        j, a, pedidas, cfg = self._juez()
+        j.actualizar_indice(self.AHORA)
+        c = fuentes.Chollo(id="2087000", titulo=self.TITULO, tienda="PcComponentes", precio_cent=3399,
+                           url="https://www.chollometro.com/ofertas/newskill-gungnyr-2087000",
+                           publicada=self.AHORA - timedelta(minutes=12), texto=self.TITULO,
+                           categoria="Electrónica", precio_antes_cent=14495)
+        canal = notificadores.Consola(salida=lambda *_: None)
+        cfg["descubrimiento"]["horario"] = None
+        descubrimiento._procesar_comunidad([(fuentes.Chollometro(), c, timedelta(hours=6))], cfg, a, canal,
+                                           self.AHORA, self.AHORA, {}, j)
+        t = canal.enviadas[0]
+        self.assertEqual((t.tipo, t.precio_cent, t.referencia_cent, t.referencia_etiqueta),
+                         ("chollo", 3399, 13099, "habitual"), "−74 % frente a su precio habitual real, no al PVPR")
+        self.assertIn("Nuevo mínimo del año", t.veredicto)
+        self.assertEqual(t.enlaces[0][0], "📈 Historial")
+        n = len(pedidas)
+        descubrimiento._procesar_comunidad([(fuentes.Chollometro(), c, timedelta(hours=6))], cfg, a, canal,
+                                           self.AHORA, self.AHORA, {}, j)
+        self.assertEqual((len(canal.enviadas), len(pedidas)), (1, n), "ni se repite ni se vuelve a consultar")
+
+    def test_lo_que_no_es_de_esas_tiendas_ni_se_consulta(self):
+        j, a, pedidas, cfg = self._juez()
+        c = fuentes.Chollo(id="1", titulo="Bombones Ferrero Rocher 24 unidades", tienda="Supercor", precio_cent=649,
+                           url="https://x", publicada=self.AHORA, texto="", precio_antes_cent=2163)
+        self.assertFalse(j.juzgar(c, self.AHORA))
+        self.assertEqual(pedidas, [])

@@ -20,6 +20,7 @@ una serie que no cuadra con la lectura actual de la tienda no se guarda.
 """
 from __future__ import annotations
 
+import gzip
 import html as htmlmod
 import json
 import re
@@ -45,10 +46,13 @@ class ErrorTercero(RuntimeError):
 
 def descargar(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/html",
-                                               "Accept-Language": "es-ES,es;q=0.9"})
+                                               "Accept-Language": "es-ES,es;q=0.9", "Accept-Encoding": "gzip"})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            return r.read().decode("utf-8", "replace")
+            datos = r.read()
+            if r.headers.get("Content-Encoding") == "gzip":
+                datos = gzip.decompress(datos)
+            return datos.decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         raise ErrorTercero("%s responde HTTP %d" % (urlsplit(url).netloc, exc.code)) from exc
 

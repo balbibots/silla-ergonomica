@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from . import (amazon, config, descubrimiento, fuentes, fuentes_historico, historial_amazon,
-               notificadores, reglas, seguimiento)
+               juez, notificadores, reglas, seguimiento)
 from .almacen import Almacen
 from .modelo import ahora_utc, desde_iso, eur, fecha_corta, iso
 
@@ -66,8 +66,13 @@ def _fuentes(almacen: Almacen, cfg: dict) -> list:
 
 def _descubrir(cfg: dict, almacen: Almacen, notificador, ahora=None) -> int:
     seguidos = {t.clave for p in config.productos(cfg) for t in p.tiendas if t.lector == "amazon_ficha"}
+    j = juez.Juez(cfg, almacen)
+    try:
+        j.actualizar_indice(ahora or ahora_utc())
+    except Exception as exc:  # noqa: BLE001 - sin indice, el juez usa reacofertas
+        print("Juez: no se pudo actualizar el indice de pccomtracker: %s" % exc)
     return descubrimiento.ejecutar(cfg, almacen, notificador, _fuentes(almacen, cfg), ahora or ahora_utc(),
-                                   leer=amazon.leer, seguidos=seguidos)
+                                   leer=amazon.leer, seguidos=seguidos, juez=j)
 
 
 def cmd_bucle(_args) -> int:

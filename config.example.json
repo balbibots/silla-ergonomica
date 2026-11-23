@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 10,
   "canal": "telegram",
   "seguimiento": {
     "activo": true,
@@ -206,7 +206,9 @@
         "Electrónica",
         "Gaming",
         "Hogar, vivienda y oficina"
-      ]
+      ],
+      "exigir_historico": true,
+      "max_consultas": 10
     },
     "intereses": [
       {

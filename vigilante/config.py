@@ -20,7 +20,7 @@ from .modelo import Producto, Tienda, a_centimos, asin_desde, url_amazon
 
 RAIZ = Path(__file__).resolve().parent.parent
 EJEMPLO = RAIZ / "config.example.json"
-VERSION = 9
+VERSION = 10
 CANALES = ("telegram", "discord", "consola")
 FUENTES = ("amazon_ficha", "jsonld", "shopify", "pccomtracker")
 # Tiendas que no dejan leer sus fichas de forma automatica (comprobado el
@@ -270,6 +270,13 @@ def actualizar_esquema(cfg: dict) -> tuple[dict, list[str]]:
         cambios.append("los chollazos necesitan un precio de referencia real (historico), no un tachado o PVPR")
         cambios.append("las valoraciones minimas no se aplican a errores de precio")
         cfg["version"] = 9
+    if cfg.get("version", 1) < 10:
+        com = cfg.setdefault("descubrimiento", {}).setdefault("comunidad", {})
+        com.setdefault("exigir_historico", True)
+        com.setdefault("max_consultas", 10)
+        cambios.append("Chollometro solo avisa si el producto tiene historia real (pccomtracker o reacofertas) "
+                       "y el descuento es de verdad frente a ella")
+        cfg["version"] = 10
     antes = json.dumps(cfg, sort_keys=True)
     _completar(cfg, ejemplo())
     if json.dumps(cfg, sort_keys=True) != antes:
