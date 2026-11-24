@@ -1,5 +1,5 @@
 {
-  "version": 10,
+  "version": 11,
   "canal": "telegram",
   "seguimiento": {
     "activo": true,
@@ -148,6 +148,11 @@
         "max_antiguedad_horas": 48,
         "max_fichas": 20,
         "categorias": []
+      },
+      "amazon_ofertas": {
+        "activo": true,
+        "intervalo_min": 15,
+        "max_antiguedad_horas": 6
       }
     },
     "horario": {
@@ -182,7 +187,7 @@
       "min_dias": 30
     },
     "verificar_en_amazon": true,
-    "max_verificaciones_dia": 20,
+    "max_verificaciones_dia": 80,
     "valoracion_min": 4.0,
     "valoraciones_min": 25,
     "max_avisos_ejecucion": 5,
@@ -260,6 +265,54 @@
       "chollo",
       "interes",
       "minimo"
+    ],
+    "niveles": {
+      "error": {
+        "descuento_min_pct": 80,
+        "ahorro_min_eur": 30,
+        "valor_min_eur": 50
+      },
+      "chollazo": {
+        "descuento_min_pct": 60,
+        "ahorro_min_eur": 30
+      },
+      "extraordinaria": {
+        "reglas": [
+          {
+            "descuento_min_pct": 40,
+            "ahorro_min_eur": 50
+          },
+          {
+            "descuento_min_pct": 30,
+            "ahorro_min_eur": 150
+          }
+        ]
+      },
+      "max_referencia_eur": 5000,
+      "max_descuento_pct": 95,
+      "provisional": {
+        "activo": true,
+        "niveles": [
+          "error",
+          "chollazo"
+        ],
+        "fuentes": [
+          "amazon_ofertas",
+          "chollomazon",
+          "pccomtracker",
+          "reacofertas"
+        ]
+      },
+      "realerta_bajada_pct": 5
+    },
+    "prefiltro_anunciado_pct": 40,
+    "max_verificaciones_ejecucion": 5,
+    "ventanas_rapidas": [
+      {
+        "desde": "06:55",
+        "hasta": "10:30",
+        "factor": 0.5
+      }
     ]
   }
 }

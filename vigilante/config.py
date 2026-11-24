@@ -20,7 +20,7 @@ from .modelo import Producto, Tienda, a_centimos, asin_desde, url_amazon
 
 RAIZ = Path(__file__).resolve().parent.parent
 EJEMPLO = RAIZ / "config.example.json"
-VERSION = 10
+VERSION = 11
 CANALES = ("telegram", "discord", "consola")
 FUENTES = ("amazon_ficha", "jsonld", "shopify", "pccomtracker")
 # Tiendas que no dejan leer sus fichas de forma automatica (comprobado el
@@ -90,8 +90,10 @@ INTERESES_V8 = [{
     "descuento_min_pct": 15, "ahorro_min_eur": 10,
 }]
 ERRORES_V8 = {"descuento_min_pct": 80, "ahorro_min_eur": 30, "valor_min_eur": 50, "todas_las_categorias": True}
-FUENTES_DESCUBRIMIENTO = ("chollomazon", "chollometro", "pccomtracker", "reacofertas", "simulado")
-MIN_INTERVALO_FUENTE = {"chollomazon": 60, "chollometro": 5, "pccomtracker": 30, "reacofertas": 60}
+FUENTES_DESCUBRIMIENTO = ("amazon_ofertas", "chollomazon", "chollometro", "pccomtracker", "reacofertas", "simulado")
+MIN_INTERVALO_FUENTE = {"amazon_ofertas": 10, "chollomazon": 60, "chollometro": 3, "pccomtracker": 30,
+                        "reacofertas": 60}
+VENTANAS_V11 = [{"desde": "06:55", "hasta": "10:30", "factor": 0.5}]
 # v9: descubrimiento con referencias de precios reales.
 FUENTES_V9 = {
     "pccomtracker": {"activo": True, "intervalo_min": 60, "max_antiguedad_horas": 26, "max_fichas": 25,
@@ -277,6 +279,21 @@ def actualizar_esquema(cfg: dict) -> tuple[dict, list[str]]:
         cambios.append("Chollometro solo avisa si el producto tiene historia real (pccomtracker o reacofertas) "
                        "y el descuento es de verdad frente a ella")
         cfg["version"] = 10
+    if cfg.get("version", 1) < 11:
+        from .niveles import POR_DEFECTO
+        des = cfg.setdefault("descubrimiento", {})
+        des.setdefault("niveles", copy.deepcopy(POR_DEFECTO))
+        des["fuentes"].setdefault("amazon_ofertas", {"activo": True, "intervalo_min": 15, "max_antiguedad_horas": 6})
+        des.setdefault("prefiltro_anunciado_pct", 40)
+        des.setdefault("max_verificaciones_ejecucion", 5)
+        if des.get("max_verificaciones_dia", 20) <= 20:
+            des["max_verificaciones_dia"] = 80
+        des.setdefault("ventanas_rapidas", copy.deepcopy(VENTANAS_V11))
+        cambios.append("detector de chollos excepcionales: errores (80 %), chollazos (60 % y 30 EUR) y ofertas "
+                       "extraordinarias (40 % y 50 EUR o 30 % y 150 EUR) frente a precios reales, en cualquier categoria")
+        cambios.append("nueva fuente directa: la pagina de ofertas de Amazon, comprobando cada ficha")
+        cambios.append("de 06:55 a 10:30 las fuentes se miran el doble de a menudo (ofertas flash)")
+        cfg["version"] = 11
     antes = json.dumps(cfg, sort_keys=True)
     _completar(cfg, ejemplo())
     if json.dumps(cfg, sort_keys=True) != antes:
@@ -383,6 +400,21 @@ def validar(cfg: dict) -> None:
     _num(des.get("oferta_interesante"), "ahorro_min_eur", "descubrimiento.oferta_interesante")
     _num(des.get("minimo_local"), "min_observaciones", "descubrimiento.minimo_local", 2)
     _num(des.get("minimo_local"), "min_dias", "descubrimiento.minimo_local", 1)
+    niv = des.get("niveles")
+    if not isinstance(niv, dict):
+        raise ErrorConfig("Falta descubrimiento.niveles")
+    for nombre in ("error", "chollazo"):
+        for k in ("descuento_min_pct", "ahorro_min_eur"):
+            _num(niv.get(nombre), k, "descubrimiento.niveles.%s" % nombre)
+    for i, regla in enumerate((niv.get("extraordinaria") or {}).get("reglas", [])):
+        for k in ("descuento_min_pct", "ahorro_min_eur"):
+            _num(regla, k, "descubrimiento.niveles.extraordinaria.reglas[%d]" % i)
+    for k in ("max_referencia_eur", "max_descuento_pct", "realerta_bajada_pct"):
+        _num(niv, k, "descubrimiento.niveles")
+    for v in des.get("ventanas_rapidas", []):
+        if not (isinstance(v, dict) and re.match(r"^\d\d:\d\d$", str(v.get("desde"))) and
+                re.match(r"^\d\d:\d\d$", str(v.get("hasta"))) and 0 < float(v.get("factor", 0)) <= 1):
+            raise ErrorConfig("descubrimiento.ventanas_rapidas: cada una con desde, hasta (HH:MM) y factor (0-1]")
     err = des.get("errores")
     for k in ("descuento_min_pct", "ahorro_min_eur", "valor_min_eur", "max_referencia_eur", "max_descuento_pct"):
         _num(err, k, "descubrimiento.errores")

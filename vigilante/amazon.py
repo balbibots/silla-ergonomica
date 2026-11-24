@@ -46,6 +46,25 @@ _MIGA = re.compile(r'<a [^>]*>\s*([^<]+?)\s*</a>')
 _AGOTADO = re.compile(r'id="outOfStock"|>\s*No disponible por el momento\.?\s*<')
 
 _CONDICION = {"NEW": NUEVO, "USED": USADO}
+# Referencias de precio de la ficha (comprobado el 24/11/2026 en dos fichas):
+# "Precio recomendado:" (PVPR) o "Precio mediano:" en el bloque basisPrice, y
+# "El precio mas bajo de los ultimos 30 dias:" en el bloque de la oferta.
+_BASE = re.compile(r'apex-basisprice-label">\s*(Precio [^:<]+):\s*</span>\s*<span class="a-price a-text-price'
+                   r'[^"]*"[^>]*>\s*<span class="a-offscreen">\s*([\d.,]+)')
+_MIN30 = re.compile(r'precio m.s bajo de los .ltimos 30(?:&nbsp;|\s)d.as:\s*<span class="a-price[^"]*"[^>]*>'
+                    r'\s*<span class="a-offscreen">\s*([\d.,]+)', re.I)
+
+
+def referencias(html: str) -> dict:
+    """{"min30": c, "mediano": c, "pvpr": c} en centimos, las que haya."""
+    out = {}
+    m = _MIN30.search(html)
+    if m:
+        out["min30"] = a_centimos(m.group(1))
+    m = _BASE.search(html)
+    if m:
+        out["mediano" if "mediano" in m.group(1).lower() else "pvpr"] = a_centimos(m.group(2))
+    return out
 
 
 def _condicion(tipo: str) -> str:
@@ -96,6 +115,8 @@ def analizar_ficha(html: str, asin: str, fecha=None) -> Observacion:
         raise ErrorLectura("Precio sospechoso (%s)" % precio)
 
     obs.precio_cent = a_centimos(precio)
+    refs = referencias(html)
+    obs.min30_cent, obs.mediano_cent, obs.pvpr_cent = refs.get("min30"), refs.get("mediano"), refs.get("pvpr")
     final, texto = cp._cupon_amazon(html, precio)
     if texto:
         obs.cupon_cent = obs.precio_cent - a_centimos(final)

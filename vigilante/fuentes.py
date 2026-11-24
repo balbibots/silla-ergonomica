@@ -32,7 +32,7 @@ CHOLLOMAZON_ATRIBUCION = "Datos: CholloMazon (CC BY 4.0) · chollomazon.com/dato
 class Candidato:
     asin: str
     titulo: str
-    precio_cent: int
+    precio_cent: int | None             # None: la fuente no da precio (Amazon /deals)
     categoria: str
     fuente: str
     condicion: str = NUEVO
@@ -174,6 +174,10 @@ class Chollo:
     minimo_fecha: datetime | None = None
     minimo_texto: str = ""
     pagina: str | None = None              # ficha en la web de seguimiento
+    min30_cent: int | None = None          # minimo de los 30 dias anteriores (real)
+    ref_bot_cent: int | None = None        # mediana de lo visto por el bot (real)
+    titulo_ref: str | None = None          # titulo del producto emparejado (juez)
+    veredicto: object = None               # niveles.Veredicto, si lo hay
 
 
 def _precio_texto(t: str) -> int | None:

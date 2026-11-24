@@ -23,8 +23,9 @@ logs y a la base de datos.
 |---|---|---|---|
 | **1 · Tus productos** | Los productos de `productos`, en cada una de sus tiendas | **Cada transición**: cualquier cambio de precio (desde 0,01 €) o de stock en cada tienda, aunque no sea la más barata y aunque ese precio ya se viera antes; 📉/📈 cambio del mejor precio, 🎯 objetivo, 📊/🏆 mínimos y 📦 reposición. Todo lo de un ciclo va en **una sola tarjeta** por producto. Sin filtros de valoraciones | Fichas de las tiendas (y pccomtracker para PcComponentes). 👀 también si alguien los publica en Chollometro |
 | **2 · 🛍️ Intereses activos** | Lo que buscas ahora (`descubrimiento.intereses`, de inicio: aspiradoras) por palabras del título, con exclusiones (robots, recambios, bolsas…) | Descuento de al menos un 15 % y 10 €, **o** precio por debajo de tu objetivo (140 €), entre 50 y 250 €. Lo que sale de un catálogo (una categoría o una búsqueda) necesita siempre descuento frente a una referencia real | CholloMazon, Chollometro y, para tus intereses, las categorías de pccomtracker y las búsquedas de reacofertas |
-| **3 · 💥 Chollazos** | Tus temas | Descuento **real** de al menos un **60 % y 30 €** sobre algo que valga 50 € o más. Real = frente a precios cobrados de verdad: el precio habitual de pccomtracker, la mediana diaria de 90 días de reacofertas o lo que el bot ha visto durante al menos un mes. **Un tachado, un PVPR o el «antes» de una publicación nunca bastan** | pccomtracker, reacofertas y CholloMazon (con historial del bot) |
-| **4 · 🚨 Errores de precio** | **Cualquier categoría** | Descuento del **80 %** o más (sobre algo de 50 € a 3.000 €, ahorrando 30 €, y no más del 95 %, que suele ser un dato roto), o la comunidad lo llama «error de precio» en el título. A cualquier hora y sin gastar el cupo diario. **«Comprobado»** si el bot ha leído ese precio y stock en la ficha de la tienda (hoy, Amazon); si no, **«sin comprobar»** | Las cuatro fuentes |
+| **3 · 💥 Chollazos excepcionales** | **Cualquier categoría** | Descuento **real** de al menos un **60 % y 30 €**. Real = frente al mínimo de 30 días, el precio mediano, el habitual o lo que el bot ha visto (ver «Detector»). **Un tachado o un PVPR nunca deciden**. A cualquier hora | Amazon (ofertas + ficha), pccomtracker, reacofertas, CholloMazon y Chollometro con juez |
+| **3b · 💎 Ofertas extraordinarias** | **Cualquier categoría** | Descuento real de **40 % y 50 €**, o de **30 % y 150 €** | Las mismas |
+| **4 · 🚨 Errores de precio** | **Cualquier categoría** | Descuento real del **80 %** o más (sobre algo de 50 € o más, ahorrando 30 €, y no más del 95 %, que suele ser un dato roto), o la comunidad lo llama «error de precio» en el título (con historia real). A cualquier hora y sin gastar el cupo diario. **«Comprobado»** si el bot ha leído ese precio y stock en la ficha de la tienda (hoy, Amazon); si no, **«sin comprobar»** | Las mismas |
 
 Reglas comunes:
 
@@ -41,6 +42,64 @@ Reglas comunes:
 Los descuentos de los niveles 2 a 4 son frente a un precio de referencia o
 anterior, **no** frente a un histórico; la tarjeta lo dice. Los mínimos
 (📊/🏆) solo salen con historial suficiente.
+
+## Detector de chollos excepcionales (v11)
+
+El objetivo es avisar de ofertas como el **Newskill Gungnyr TKL Pro Ivory a
+33,99 €** en PcComponentes (24/11/2026; mínimo de 30 días 116,99 €, PVPR
+144,95 €): un **−71 % real** y 83 € de ahorro, aunque los teclados no estén
+entre tus intereses. Es la prueba de regresión obligatoria. Mejor un día sin
+avisos que veinte ofertas normales.
+
+**Referencia real**, por orden de preferencia (`vigilante/niveles.py`):
+
+1. **Mínimo de 30 días**: el «precio más bajo de los últimos 30 días» que la
+   normativa Omnibus obliga a mostrar con cada rebaja. Amazon lo publica en la
+   ficha; MediaMarkt, como precio tachado; reacofertas permite calcularlo.
+2. **Precio mediano** que publica Amazon en algunas fichas.
+3. **Precio habitual** de pccomtracker o **mediana diaria de 90 días** de reacofertas.
+4. **Lo que ha visto el bot** (mediana de 30 días, al menos 3 lecturas en 3
+   días distintos). Sirve para detectar **caídas anómalas** aunque la tienda
+   no anuncie descuento.
+
+El PVPR, el tachado o el «antes» son **descuento comercial**: la tarjeta lo
+muestra aparte («🏷️ Anunciado: −36 % sobre 549,90 €») y nunca decide si hay
+una referencia real. Ejemplo real: el REDMI Note 17 Pro aparece en las
+ofertas de Amazon con **−36 %** frente al PVPR, pero es un **−8 %** frente a
+su mínimo de 30 días: no avisa. Solo si **no hay ninguna** referencia real se
+admite una **alerta provisional** («⏳ PROVISIONAL… Pendiente: histórico
+real»), y solo para errores y chollazos de Amazon, CholloMazon, pccomtracker
+o reacofertas; nunca con el «antes» de Chollometro.
+
+**Fuentes investigadas** (24/11/2026, una petición normal identificada como el bot):
+
+| Tienda | Vía | Estado |
+|---|---|---|
+| Amazon.es | Página de ofertas (`/deals`, permitida en su robots.txt): 30 ofertas con ASIN y descuento anunciado; la ficha (Chromium) da precio, stock, mínimo de 30 días y mediano/PVPR | ✅ **Integrada**, fuente directa. Cada 15 min (10 en ventana rápida); como mucho 6 fichas por pasada y 80 al día |
+| PcComponentes | `/ofertas-flash` y fichas | ❌ HTTP 403 (Cloudflare). No se fuerza. Ofertas flash a las 07:00 entre semana según su web portuguesa |
+| PcComponentes | pccomtracker (portada y categorías) y reacofertas | ✅ Integradas (terceros, actualizan a diario) |
+| PcComponentes | Chollometro como detector + juez (índice semanal de 119.909 fichas de pccomtracker y buscador de reacofertas) | ✅ Integrado: rápido (minutos) cuando alguien la publica |
+| PcComponentes, El Corte Inglés, Fnac, Worten, Carrefour… | Feed de productos de Awin (programa de afiliados) | ⏳ **Pendiente de registro** (gratis): precio, stock, EAN y MPN con permiso de la tienda. Frecuencia de actualización sin confirmar |
+| MediaMarkt | Fichas: JSON-LD y «Precio más bajo (30 días)» | ✅ Para tus productos. Sus listados y campañas cargan los productos por su API interna (GraphQL): no se usa |
+| El Corte Inglés, Fnac | — | ❌ 403 incluso en robots.txt |
+| Carrefour, Worten | — | ❌ 403 |
+| Miravia | Portada (recomendaciones con «precio original» de vendedores) | ⏳ Pendiente: solo descuentos anunciados |
+| AliExpress | API de afiliados | ⏳ Pendiente de registro (gratis) |
+| Chollometro, CholloMazon | Detección | ✅ Complementarias, no el núcleo |
+
+**Velocidad.** Chollometro cada 5 min, Amazon cada 15, CholloMazon y
+pccomtracker cada 60 y reacofertas cada 180. De **06:55 a 10:30** (cuando
+salen las ofertas flash) todo se mira el **doble de a menudo**
+(`descubrimiento.ventanas_rapidas`), sin bajar del mínimo de cada fuente.
+Errores y chollazos salen a cualquier hora y sin gastar el cupo diario.
+
+**Duplicados.** Cada oferta tiene una clave común (ASIN, EAN o tienda y
+modelo), así que la misma oferta que llega por pccomtracker y por Chollometro
+avisa una vez. Vuelve a avisar si baja otro 5 % (`niveles.realerta_bajada_pct`).
+
+**Histórico** (`precios_vistos`): precio, mínimo de 30 días, habitual, PVPR o
+«antes», envío, disponibilidad, ASIN, EAN, SKU, referencia del fabricante y
+título de todo lo que pasa por el descubrimiento.
 
 ## Estado (noviembre de 2026)
 
@@ -476,7 +535,7 @@ En `data/`, en la propia Pi:
 python -m unittest discover -s tests -v
 ```
 
-Son 101 pruebas sin red. Cubren:
+Son 123 pruebas sin red. Cubren:
 
 - **Lectura de la ficha:** producto y variante correctos, precio de oferta
   frente al tachado y las cuotas, decimales con coma, página sin precio,

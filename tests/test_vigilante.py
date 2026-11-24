@@ -14,7 +14,8 @@ os.environ.setdefault("TELEGRAM_BOT_TOKEN", "x")
 os.environ.setdefault("TELEGRAM_CHAT_ID", "1")
 
 from vigilante import (amazon, config, descubrimiento, fuentes, fuentes_historico, historial_amazon,  # noqa: E402
-                       juez, notificadores, reglas, seguimiento, terceros, tiendas)
+                       fuentes_tiendas, historia, juez, niveles, notificadores, reglas, seguimiento, terceros,
+                       tiendas)
 from vigilante.almacen import Almacen  # noqa: E402
 from vigilante.modelo import (Observacion, Producto, a_centimos, asin_desde, eur,  # noqa: E402
                               hora_madrid, iso)
@@ -443,7 +444,7 @@ class Configuracion(unittest.TestCase):
                 config.validar({**cfg, **cambio})
         des = json.loads(json.dumps(cfg["descubrimiento"]))
         des["fuentes"]["chollomazon"]["activo"] = False
-        for f in ("chollometro", "pccomtracker", "reacofertas"):
+        for f in ("chollometro", "pccomtracker", "reacofertas", "amazon_ofertas"):
             des["fuentes"][f]["activo"] = False
         with self.assertRaises(config.ErrorConfig):
             config.validar({**cfg, "descubrimiento": des})
@@ -555,13 +556,14 @@ class Descubrimiento(unittest.TestCase):
         self.cfg["descubrimiento"]["categorias"] = ["Electrónica", "Informática", "Hogar"]
         self.canal = notificadores.Consola(salida=lambda *_: None)
         self.fuente = FuenteFalsa()
-        # El bot ya lleva mas de un mes viendo estos dos: su precio habitual es real.
-        self.historia({"B0AAAAAAA1": 12999, "B0AAAAAAA2": 8550})
+        # El bot ya lleva semanas viendo estos dos: su precio habitual es real.
+        self.historia({"B0AAAAAAA1": 12999, "B0AAAAAAA2": 15000})
 
-    def historia(self, precios, dias=(40, 30, 20, 10, 5)):
+    def historia(self, precios, dias=(25, 20, 10, 5)):
         for asin, precio in precios.items():
             for d in dias:
-                self.a.registrar(Observacion(asin, T0 - timedelta(days=d), "amazon_ficha", precio_cent=precio))
+                historia.registrar(self.a, historia.clave("Amazon", asin=asin), "amazon_ficha", "Amazon", precio,
+                                   T0 - timedelta(days=d), asin=asin, disponible=1)
 
     def lote(self, ahora, **cambios):
         texto = CSV_CM % {"pub": iso_z(ahora - timedelta(minutes=30)), "comp": iso_z(ahora - timedelta(minutes=20))}
@@ -580,16 +582,17 @@ class Descubrimiento(unittest.TestCase):
     def test_sin_historico_el_tachado_de_amazon_no_basta(self):
         self.a = Almacen(":memory:")  # sin historia
         self.lote(T0)
-        self.assertEqual(self.ejecutar(T0), 0, "54 % frente al precio de referencia de Amazon, pero sin historico")
+        self.assertEqual(self.ejecutar(T0), 0, "54 % frente al precio de referencia de Amazon, pero sin historico "
+                                               "(y sin historico solo hay provisionales de errores y chollazos)")
 
     def test_avisa_ya_de_las_ofertas_activas(self):
         self.lote(T0)
         self.assertEqual(self.ejecutar(T0), 2, "desde la primera descarga, sin esperar")
         tipos = {t.nombre: t.tipo for t in self.canal.enviadas}
-        self.assertEqual(tipos, {"Auriculares X, con ANC": "chollo", "Sartenes": "chollo"},
-                         "fuera: Moda (categoria), el dato antiguo y el que no tiene referencia")
-        t = self.canal.enviadas[0]
-        self.assertEqual(t.veredicto, "📊 Referencia real: lo que he visto de este producto en los últimos 90 días")
+        self.assertEqual(tipos, {"Auriculares X, con ANC": "extraordinaria", "Sartenes": "chollo"},
+                         "54 % y 70 EUR: extraordinaria; 63 % y 94 EUR: chollazo")
+        t = next(t for t in self.canal.enviadas if t.nombre == "Auriculares X, con ANC")
+        self.assertEqual(t.notas[0], "✅ Descuento real: −53 % (−70,00 €) frente a lo que he visto en 30 días")
         self.assertEqual((t.referencia_cent, t.referencia_etiqueta), (12999, "habitual"))
         self.assertIn("CholloMazon (CC BY 4.0)", t.fuente)
 
@@ -602,8 +605,9 @@ class Descubrimiento(unittest.TestCase):
     def test_verificacion_en_amazon(self):
         self.lote(T0)
         self.assertEqual(self.ejecutar(T0, leer=lectura_amazon(5999, valoracion=3.5)), 0)
-        self.lote(T0 + timedelta(hours=1))
-        self.assertEqual(self.ejecutar(T0 + timedelta(hours=1), leer=lectura_amazon(5999, disponible=False)), 0)
+        self.lote(T0 + timedelta(hours=7))
+        self.assertEqual(self.ejecutar(T0 + timedelta(hours=7), leer=lectura_amazon(5999, disponible=False)), 0,
+                         "pasadas 6 h se vuelve a comprobar la misma oferta")
         filas = self.a.db.execute("SELECT datos FROM candidatos WHERE notificado=0").fetchall()
         motivos = {json.loads(f["datos"])["motivo"] for f in filas}
         self.assertIn("sin unidades nuevas en Amazon", motivos)
@@ -659,7 +663,8 @@ class Descubrimiento(unittest.TestCase):
     def test_valoraciones_configurables(self):
         self.cfg["descubrimiento"]["valoraciones_en"] = []
         self.lote(T0)
-        self.assertEqual(self.ejecutar(T0, leer=lectura_amazon(5999, valoracion=3.0, num=2)), 1,
+        self.assertEqual(self.ejecutar(T0, leer=lectura_amazon(precios={"B0AAAAAAA1": 5999, "B0AAAAAAA2": 5590},
+                                                               valoracion=3.0, num=2)), 2,
                          "sin exigir valoraciones a los chollazos")
 
     def test_reacondicionado_y_productos_seguidos_fuera(self):
@@ -680,8 +685,8 @@ class Descubrimiento(unittest.TestCase):
                                   [(T0 - timedelta(days=100), 6000), (T0 - timedelta(days=10), 7000)])
         self.lote(T0, B0AAAAAAA2={"precio_cent": 5590})
         self.ejecutar(T0)
-        self.assertEqual([t.tipo for t in self.canal.enviadas], ["minimo_365", "chollo"],
-                         "el minimo verificado va antes que el chollazo")
+        self.assertEqual([t.tipo for t in self.canal.enviadas], ["minimo_365", "extraordinaria"],
+                         "el minimo verificado va antes que la oferta extraordinaria")
 
     def test_producto_seguido_rebajado_pide_lectura_extra(self):
         self.a.registrar(Observacion("B0AAAAAAA2", T0 - timedelta(days=1), "amazon_ficha", precio_cent=7000))
@@ -1065,9 +1070,11 @@ class ChollosComunidad(unittest.TestCase):
     def test_errores_de_precio_en_cualquier_categoria(self):
         self.assertEqual(self.ev(chollo("ERROR DE PRECIO: abrigo de marca", 4900, categoria="Moda y accesorios")),
                          "error_precio")
-        self.assertEqual(self.ev(chollo("Muñeca", 5000, antes=40000, categoria="Juguetes, familia e hijos")),
+        self.assertEqual(self.ev(chollo("Muñeca", 5000, real=40000, categoria="Juguetes, familia e hijos")),
                          "error_precio", "88 % sobre 400 EUR, aunque no sea de tus temas")
-        self.assertEqual(self.ev(chollo("Robot aspirador Roborock", 9900, antes=69900)), "error_precio")
+        self.assertIsNone(self.ev(chollo("Muñeca", 5000, antes=40000, categoria="Juguetes, familia e hijos")),
+                          "el 'antes' de Chollometro no cuenta ni para una alerta provisional")
+        self.assertEqual(self.ev(chollo("Robot aspirador Roborock", 9900, real=69900)), "error_precio")
         self.assertIsNone(self.ev(chollo("Calcetines", 500, antes=4000)), "88 %, pero sobre 40 EUR: calderilla")
 
     def test_reacondicionado_nunca(self):
@@ -1093,13 +1100,15 @@ class ChollosComunidad(unittest.TestCase):
 
     def test_chollazo_de_verdad(self):
         self.assertEqual(self.ev(chollo("Auriculares Sony WH-1000XM5", 12900, real=39900)), "chollo")
-        self.assertIsNone(self.ev(chollo("Auriculares Sony WH-1000XM5", 17900, real=39900)), "55 %: no llega al 60 %")
+        self.assertEqual(self.ev(chollo("Auriculares Sony WH-1000XM5", 17900, real=39900)), "extraordinaria",
+                         "55 % y 220 EUR: no llega a chollazo, pero es una oferta extraordinaria")
+        self.assertIsNone(self.ev(chollo("Auriculares Sony WH-1000XM5", 31900, real=39900)), "20 %: nada")
 
     def test_un_tachado_o_pvpr_no_basta_para_un_chollazo(self):
         self.assertIsNone(self.ev(chollo("Auriculares Sony WH-1000XM5", 12900, antes=39900)),
                           "68 % frente al 'antes' de la publicacion: sin historico no es un chollazo")
-        self.assertEqual(self.ev(chollo("Auriculares Sony WH-1000XM5", 12900, antes=39900, real=21900)), None,
-                         "frente a su precio habitual real solo es un 41 %")
+        self.assertEqual(self.ev(chollo("Auriculares Sony WH-1000XM5", 12900, antes=39900, real=21900)),
+                         "extraordinaria", "frente a su habitual real es un 41 % y 90 EUR, no el 68 % anunciado")
 
     def test_dato_roto_no_es_un_error_de_precio(self):
         c = chollo("Corsair Hydro X Rotary Pack 2 Adaptadores", 11664, real=1209879, categoria=None)
@@ -1291,3 +1300,223 @@ class JuezChollometro(unittest.TestCase):
                            url="https://x", publicada=self.AHORA, texto="", precio_antes_cent=2163)
         self.assertFalse(j.juzgar(c, self.AHORA))
         self.assertEqual(pedidas, [])
+
+
+NIV = niveles.POR_DEFECTO
+
+
+class Oportunidades(unittest.TestCase):
+    """Detector de chollos excepcionales: casos obligatorios."""
+
+    AHORA = datetime(2026, 11, 24, 6, 58, tzinfo=timezone.utc)  # 07:58 en Madrid
+
+    def teclado(self, fuente="pccomtracker", **kw):
+        """Newskill Gungnyr TKL Pro Ivory en PcComponentes (24/11/2026): 33,99 EUR,
+        minimo de 30 dias 116,99 EUR, PVPR 144,95 EUR."""
+        c = fuentes.Chollo(id="10041515", titulo="Newskill Gungnyr TKL Pro Ivory Teclado Optomecánico Gaming RGB",
+                           tienda="PcComponentes", precio_cent=3399,
+                           url="https://www.pccomponentes.com/newskill-gungnyr-tkl-pro-ivory-teclado-optomecanico-gaming-rgb-switches-gateron-red-intercambiables",
+                           publicada=self.AHORA - timedelta(minutes=5), texto="", fuente=fuente,
+                           categoria="Periféricos › Teclados gaming", precio_antes_cent=14495, min30_cent=11699)
+        for k, v in kw.items():
+            setattr(c, k, v)
+        return c
+
+    def des(self):
+        d = config.ejemplo()["descubrimiento"]
+        d["horario"] = None
+        return d
+
+    # ------------------------------------------------------------ regresion
+    def test_regresion_teclado_newskill(self):
+        v = niveles.evaluar(niveles.Evidencia(precio=3399, min30=11699, anunciado=14495), NIV, "pccomtracker")
+        self.assertEqual((v.nivel, round(v.pct, 2), v.ahorro, v.provisional), ("chollazo", 70.95, 8300, False))
+        self.assertAlmostEqual(v.anunciado_pct, 76.55, places=1)
+        c = self.teclado()
+        self.assertEqual(descubrimiento.evaluar_chollo(c, self.des(), self.AHORA, timedelta(hours=26)), "chollo",
+                         "chollazo excepcional aunque los teclados no esten en tus intereses")
+        a, canal = Almacen(":memory:"), notificadores.Consola(salida=lambda *_: None)
+        cfg = config.ejemplo()
+        cfg["descubrimiento"]["horario"] = {"desde": "09:00", "hasta": "23:00"}  # 07:58: fuera de horario
+        descubrimiento._procesar_comunidad([(fuentes_historico.PCComTracker(cfg, a), c, timedelta(hours=26))],
+                                           cfg, a, canal, self.AHORA, self.AHORA, {})
+        t = canal.enviadas[0]
+        self.assertEqual((t.tipo, t.precio_cent, t.referencia_cent, t.referencia_etiqueta),
+                         ("chollo", 3399, 11699, "mín. 30 días"), "sale a las 07:58: un chollazo no espera")
+        self.assertEqual(t.notas[0], "✅ Descuento real: −70 % (−83,00 €) frente a su mínimo de 30 días")
+        self.assertIn("🏷️ Anunciado: −76 % sobre 144,95 € (descuento comercial)", t.notas)
+        self.assertIn("CHOLLAZO EXCEPCIONAL", a_telegram(t).upper())
+
+    # ------------------------------------------------- PVPR inflado (real)
+    def test_descuento_ficticio_sobre_pvpr_inflado(self):
+        refs = amazon.referencias(dato("amz_B0H4H89QXV.html"))
+        self.assertEqual(refs, {"min30": 37990, "pvpr": 54990})
+        ev = niveles.Evidencia(precio=34990, min30=refs["min30"], anunciado=refs["pvpr"])
+        self.assertIsNone(niveles.evaluar(ev, NIV, "amazon_ofertas"),
+                          "REDMI Note 17 Pro: −36 % anunciado frente al PVPR, −8 % real frente al minimo de 30 dias")
+        self.assertIsNone(descubrimiento.evaluar_chollo(self.teclado(precio_cent=9999), self.des(), self.AHORA,
+                                                        timedelta(hours=26)),
+                          "31 % anunciado sobre el PVPR, pero un 14 % frente al minimo de 30 dias")
+
+    def test_precio_mediano_de_amazon(self):
+        refs = amazon.referencias(dato("amz_B0G4ZCRY41.html"))
+        self.assertEqual(refs, {"min30": 123405, "mediano": 118915})
+
+    # --------------------------------------------------- errores y topes
+    def test_errores_y_datos_rotos(self):
+        ev = lambda precio, ref: niveles.evaluar(niveles.Evidencia(precio=precio, min30=ref), NIV)
+        self.assertEqual(ev(4999, 49900).nivel, "error")
+        self.assertIsNone(ev(990, 49900), "98 %: un dato roto, no un error de precio")
+        self.assertEqual(ev(1500, 4900).nivel, "chollazo", "69 % sobre 49 EUR: no es error (vale menos de 50), si chollazo")
+
+    def test_liquidaciones_y_ofertas_extraordinarias(self):
+        ev = lambda precio, ref: niveles.evaluar(niveles.Evidencia(precio=precio, habitual=ref), NIV)
+        self.assertEqual(ev(29900, 59900).nivel, "extraordinaria", "liquidacion: 50 % y 300 EUR")
+        self.assertEqual(ev(104900, 149900).nivel, "extraordinaria", "30 % y 450 EUR en algo caro")
+        self.assertIsNone(ev(8900, 12900), "31 % y 40 EUR: oferta normal")
+        self.assertIsNone(ev(5900, 9900), "40 % pero solo 40 EUR")
+
+    def test_historial_incompleto_alerta_provisional(self):
+        v = niveles.evaluar(niveles.Evidencia(precio=3399, anunciado=14495), NIV, "amazon_ofertas")
+        self.assertTrue(v.provisional)
+        self.assertEqual(v.nivel, "chollazo")
+        self.assertIn("histórico real", v.pendiente[0])
+        self.assertIsNone(niveles.evaluar(niveles.Evidencia(precio=29900, anunciado=59900), NIV, "amazon_ofertas"),
+                          "sin historia, una extraordinaria frente al PVPR no basta ni para provisional")
+        self.assertIsNone(niveles.evaluar(niveles.Evidencia(precio=3399, anunciado=14495), NIV, "chollometro"),
+                          "el 'antes' de Chollometro nunca da alertas provisionales")
+        c = self.teclado(min30_cent=None)
+        self.assertEqual(descubrimiento.evaluar_chollo(c, self.des(), self.AHORA, timedelta(hours=26)), "chollo")
+        t = descubrimiento.tarjeta_chollo(c, "chollo", self.AHORA, "")
+        self.assertTrue(t.notas[0].startswith("⏳ PROVISIONAL: −76 % frente al precio anterior"), t.notas)
+
+    def test_fuera_de_categorias(self):
+        des = self.des()
+        des["comunidad"]["categorias"] = ["Gaming"]
+        c = self.teclado(fuente="chollometro", categoria="Moda y accesorios", ref_hist_cent=13099)
+        self.assertEqual(descubrimiento.evaluar_chollo(c, des, self.AHORA, timedelta(hours=6)), "chollo")
+
+    def test_ventanas_rapidas(self):
+        des = self.des()
+        ajustes = des["fuentes"]["amazon_ofertas"]
+        madrugada = datetime(2026, 11, 24, 6, 30, tzinfo=timezone.utc)   # 07:30 en Madrid
+        tarde = datetime(2026, 11, 24, 16, 0, tzinfo=timezone.utc)
+        self.assertEqual(descubrimiento.intervalo("amazon_ofertas", ajustes, des, madrugada), 10)
+        self.assertEqual(descubrimiento.intervalo("amazon_ofertas", ajustes, des, tarde), 15)
+        self.assertEqual(descubrimiento.intervalo("chollometro", des["fuentes"]["chollometro"], des, madrugada), 3)
+
+    # ------------------------------------------- duplicados y nuevas bajadas
+    def test_oferta_vieja_no_es_noticia(self):
+        des = self.des()
+        monitor = fuentes.Chollo(id="m", titulo="Monitor Gigabyte GS25F14 24,5 FullHD 144Hz", tienda="PcComponentes",
+                                 precio_cent=7499, url="https://x", publicada=self.AHORA, texto="", fuente="pccomtracker",
+                                 ref_hist_cent=14493, minimo_cent=7499,
+                                 minimo_fecha=datetime(2026, 11, 16, tzinfo=timezone.utc))
+        self.assertIsNone(descubrimiento.evaluar_chollo(monitor, des, self.AHORA, timedelta(hours=26)),
+                          "a 74,99 EUR desde el 16/11: su precio habitual antiguo no lo convierte en chollo")
+        teclado = self.teclado(min30_cent=None, ref_hist_cent=13099, minimo_cent=8199,
+                               minimo_fecha=datetime(2026, 11, 9, tzinfo=timezone.utc))
+        self.assertEqual(descubrimiento.evaluar_chollo(teclado, des, self.AHORA, timedelta(hours=26)), "chollo",
+                         "por debajo de su minimo reciente (81,99 EUR): bajada nueva, −74 % frente al habitual")
+        aspiradora = fuentes.Chollo(id="a", titulo="Bosch BBHF220 Aspirador Escoba sin Bolsa 18V", tienda="PcComponentes",
+                                    precio_cent=12099, url="https://x", publicada=self.AHORA, texto="",
+                                    fuente="pccomtracker", es_oferta=False, ref_hist_cent=14401, minimo_cent=12099,
+                                    minimo_fecha=datetime(2026, 11, 12, tzinfo=timezone.utc))
+        self.assertIsNone(descubrimiento.evaluar_chollo(aspiradora, des, self.AHORA, timedelta(hours=26)),
+                          "de tu lista, pero a ese precio desde el 12/11: no es noticia")
+
+    def test_duplicados_entre_tiendas_y_agregadores(self):
+        a, canal = Almacen(":memory:"), notificadores.Consola(salida=lambda *_: None)
+        cfg = config.ejemplo()
+        cfg["descubrimiento"]["horario"] = None
+        pct = self.teclado()
+        cm = self.teclado(fuente="chollometro", id="2087000", titulo="Teclado Newskill Gungnyr TKL Pro Ivory por 33,99€",
+                          titulo_ref=pct.titulo, ref_hist_cent=13099)
+        lote = [(fuentes_historico.PCComTracker(cfg, a), pct, timedelta(hours=26)),
+                (fuentes.Chollometro(), cm, timedelta(hours=26))]
+        descubrimiento._procesar_comunidad(lote, cfg, a, canal, self.AHORA, self.AHORA, {})
+        self.assertEqual(len(canal.enviadas), 1, "pccomtracker y Chollometro: una sola alerta")
+        mas_barato = self.teclado(precio_cent=3199)
+        descubrimiento._procesar_comunidad([(fuentes_historico.PCComTracker(cfg, a), mas_barato, timedelta(hours=26))],
+                                           cfg, a, canal, self.AHORA + timedelta(minutes=30), self.AHORA, {})
+        self.assertEqual(len(canal.enviadas), 2, "vuelve a bajar un 6 %: nueva alerta")
+        casi = self.teclado(precio_cent=3149)
+        descubrimiento._procesar_comunidad([(fuentes_historico.PCComTracker(cfg, a), casi, timedelta(hours=26))],
+                                           cfg, a, canal, self.AHORA + timedelta(minutes=60), self.AHORA, {})
+        self.assertEqual(len(canal.enviadas), 2, "solo un 1,6 % menos: no se repite")
+
+
+class AmazonDirecto(unittest.TestCase):
+    """Amazon /deals + ficha: la fuente directa (recortes reales del 24/11/2026)."""
+
+    def setUp(self):
+        self.a = Almacen(":memory:")
+        self.cfg = configuracion(None)
+        self.cfg["descubrimiento"]["horario"] = None
+        self.cfg["descubrimiento"]["prefiltro_anunciado_pct"] = 30  # el recorte trae ofertas del 31-36 %
+        self.canal = notificadores.Consola(salida=lambda *_: None)
+
+    def test_lista_de_ofertas(self):
+        o = fuentes_tiendas.ofertas_amazon(dato("amazon_deals.html"))
+        self.assertEqual(len(o), 6)
+        redmi = next(x for x in o if x["asin"] == "B0H4H89QXV")
+        self.assertEqual((redmi["anunciado_pct"], redmi["tipo"], redmi["estado"]), (36, "BEST_DEAL", "AVAILABLE"))
+        lote = fuentes_tiendas.AmazonOfertas(lambda u: dato("amazon_deals.html")).candidatos()
+        self.assertTrue(all(c.precio_cent is None for c in lote), "la lista no trae precio: lo pone la ficha")
+
+    def ejecutar(self, fichas: dict, ahora=T0):
+        def leer(asin):
+            f = fichas[asin]
+            return Observacion(asin, ahora, "amazon_ficha", precio_cent=f.get("precio"), disponible=f.get("stock", True),
+                               valoracion=4.6, num_valoraciones=500, titulo="Producto %s" % asin,
+                               min30_cent=f.get("min30"), mediano_cent=f.get("mediano"), pvpr_cent=f.get("pvpr"))
+        fuente = fuentes_tiendas.AmazonOfertas(lambda u: dato("amazon_deals.html"))
+        return descubrimiento.ejecutar(self.cfg, self.a, self.canal, [fuente], ahora, leer=leer,
+                                       dormir=lambda s: None)
+
+    def test_pvpr_inflado_no_avisa_y_un_chollo_real_si(self):
+        fichas = {"B0H4H89QXV": {"precio": 34990, "min30": 37990, "pvpr": 54990},   # REDMI: −8 % real
+                  "B0CFPWLGF2": {"precio": 49900, "min30": 129900, "pvpr": 159900},  # Kindle Paperwhite: −62 % real (precios de prueba)
+                  "B07M98CL6Y": {"precio": 4999, "min30": 5299}}
+        self.ejecutar(fichas)
+        self.assertEqual([(t.tipo, t.precio_cent) for t in self.canal.enviadas], [("chollo", 49900)])
+        motivos = [json.loads(f["datos"])["motivo"] for f in
+                   self.a.db.execute("SELECT datos FROM candidatos WHERE notificado=0")]
+        self.assertIn("descuento real insuficiente", motivos)
+
+    def test_agotado_no_avisa(self):
+        self.ejecutar({"B0CFPWLGF2": {"precio": None, "stock": False}, "B0H4H89QXV": {"precio": 34990, "min30": 37990},
+                       "B07M98CL6Y": {"precio": 4999}})
+        self.assertEqual(self.canal.enviadas, [])
+
+    def test_caida_anomala_sin_descuento_anunciado(self):
+        k = historia.clave("Amazon", asin="B0CFPWLGF2")
+        for d in (12, 8, 4):
+            historia.registrar(self.a, k, "amazon_ficha", "Amazon", 99900, T0 - timedelta(days=d), disponible=1)
+        self.ejecutar({"B0CFPWLGF2": {"precio": 44900}, "B0H4H89QXV": {"precio": 34990, "min30": 37990},
+                       "B07M98CL6Y": {"precio": 4999}})
+        t = self.canal.enviadas[0]
+        self.assertEqual((t.tipo, t.referencia_cent), ("extraordinaria", 99900))
+        self.assertIn("frente a lo que he visto en 30 días", t.notas[0])
+
+    def test_limite_de_fichas_por_pasada(self):
+        self.cfg["descubrimiento"]["max_verificaciones_ejecucion"] = 1
+        leidas = []
+        fichas = {"B0H4H89QXV": {"precio": 34990, "min30": 37990}, "B0CFPWLGF2": {"precio": 49900, "min30": 129900},
+                  "B07M98CL6Y": {"precio": 4999, "min30": 5299}}
+
+        def leer(asin):
+            leidas.append(asin)
+            f = fichas[asin]
+            return Observacion(asin, T0, "amazon_ficha", precio_cent=f["precio"], min30_cent=f["min30"],
+                               valoracion=4.6, num_valoraciones=500)
+        fuente = fuentes_tiendas.AmazonOfertas(lambda u: dato("amazon_deals.html"))
+        descubrimiento.ejecutar(self.cfg, self.a, self.canal, [fuente], T0, leer=leer, dormir=lambda s: None)
+        self.assertEqual(len(leidas), 1, "aunque la ficha leida no sea un chollo, cuenta")
+
+    def test_historial_incompleto_provisional(self):
+        self.ejecutar({"B0CFPWLGF2": {"precio": 3399, "pvpr": 14495}, "B0H4H89QXV": {"precio": 34990, "min30": 37990},
+                       "B07M98CL6Y": {"precio": 4999}})
+        t = self.canal.enviadas[0]
+        self.assertEqual(t.tipo, "chollo")
+        self.assertTrue(t.notas[0].startswith("⏳ PROVISIONAL"), t.notas)

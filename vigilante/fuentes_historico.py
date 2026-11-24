@@ -135,6 +135,28 @@ def _tienda(texto: str) -> str:
     return next((v for k, v in TIENDAS.items() if k in t), _limpio(texto))
 
 
+def oferta_vieja(precio: int | None, minimo: int | None, fecha: datetime | None, ahora: datetime) -> bool:
+    """El precio no baja de un minimo marcado en los 30 dias anteriores a hoy:
+    lleva dias asi y ya no es noticia (un monitor a 74,99 EUR desde el 16/11).
+    Si baja por debajo (el teclado a 33,99 EUR, minimo anterior 81,99 EUR), es
+    una bajada nueva."""
+    if precio is None or not minimo or not fecha:
+        return False
+    return 1 <= (ahora.date() - fecha.date()).days <= 30 and precio >= minimo
+
+
+def min30(puntos: list[tuple[datetime, int]], hasta: datetime) -> int | None:
+    """Precio mas bajo de los 30 dias ANTERIORES a hoy (cada cambio vale hasta
+    el siguiente), si la serie cubre esos 30 dias."""
+    if not puntos or puntos[0][0].date() > (hasta - timedelta(days=30)).date():
+        return None
+    inicio = (hasta - timedelta(days=30)).date()
+    vigente = [p for d, p in puntos if d.date() <= inicio][-1:]
+    dentro = [p for d, p in puntos if inicio < d.date() < hasta.date()]
+    valores = vigente + dentro
+    return min(valores) if valores else None
+
+
 def ficha_reacofertas(html: str) -> dict | None:
     try:
         puntos = terceros.serie_reacofertas(html)
@@ -280,6 +302,7 @@ class Reacofertas(_ConFichas):
             ref = med[0] if med and med[1] >= 30 else None
             ventana = [(d, p) for d, p in puntos if d.date() < ahora.date() and d >= ahora - timedelta(days=180)]
             minimo = min(ventana, key=lambda v: (v[1], v[0])) if ventana else None
+            m30 = min30(puntos, ahora)
             out.append(Chollo(
                 id=x["id"], titulo=f["titulo"] or x["titulo"], tienda=f["tienda"] or "",
                 precio_cent=f["precio"], url=pagina, publicada=ahora, texto=x["titulo"], imagen=f["imagen"],
@@ -287,7 +310,7 @@ class Reacofertas(_ConFichas):
                 precio_antes_cent=x["antes"] if x["antes"] and x["antes"] > f["precio"] else None,
                 ref_hist_cent=ref, ref_texto="mediana de 90 días según reacofertas",
                 minimo_cent=minimo[1] if minimo else None, minimo_fecha=minimo[0] if minimo else None,
-                minimo_texto="de 6 meses", pagina=pagina))
+                minimo_texto="de 6 meses", pagina=pagina, min30_cent=m30))
         print("  reacofertas: %d tarjetas, %d fichas leidas" % (len(vistos), self.leidas))
         return out
 

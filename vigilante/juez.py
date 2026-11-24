@@ -148,6 +148,7 @@ class Juez:
         if not f or not f["habitual"]:
             return None
         return {"ref": f["habitual"], "texto": "precio habitual según pccomtracker", "minimo": f["minimo"],
+                "min30": None,
                 "minimo_fecha": iso(f["minimo_fecha"]) if f["minimo_fecha"] else None, "minimo_texto": "del año",
                 "pagina": url, "titulo": f["titulo"]}
 
@@ -168,6 +169,7 @@ class Juez:
         ventana = [(d, p) for d, p in f["puntos"] if d.date() < ahora.date() and d >= ahora - timedelta(days=180)]
         mn = min(ventana, key=lambda v: (v[1], v[0])) if ventana else None
         return {"ref": med[0], "texto": "mediana de 90 días según reacofertas", "minimo": mn[1] if mn else None,
+                "min30": fh.min30(f["puntos"], ahora),
                 "minimo_fecha": iso(mn[0]) if mn else None, "minimo_texto": "de 6 meses", "pagina": pagina,
                 "titulo": f["titulo"]}
 
@@ -194,6 +196,8 @@ class Juez:
         c.minimo_cent, c.minimo_texto = dato["minimo"], dato["minimo_texto"]
         c.minimo_fecha = desde_iso(dato["minimo_fecha"]) if dato["minimo_fecha"] else None
         c.pagina = dato["pagina"]
+        c.min30_cent = dato.get("min30")
+        c.titulo_ref = dato.get("titulo")
         print("  juez: %s -> %s (%s)" % (c.titulo[:60], dato["titulo"][:60] if dato["titulo"] else "?",
                                          dato["texto"]))
         return True

@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from . import (amazon, config, descubrimiento, fuentes, fuentes_historico, historial_amazon,
-               juez, notificadores, reglas, seguimiento)
+               fuentes_tiendas, juez, notificadores, reglas, seguimiento)
 from .almacen import Almacen
 from .modelo import ahora_utc, desde_iso, eur, fecha_corta, iso
 
@@ -56,7 +56,7 @@ def migrar(almacen: Almacen, data: Path, silencioso: bool = False) -> None:
 
 
 def _fuentes(almacen: Almacen, cfg: dict) -> list:
-    lista = [fuentes.Chollometro(), fuentes.CholloMazon(almacen),
+    lista = [fuentes.Chollometro(), fuentes_tiendas.AmazonOfertas(), fuentes.CholloMazon(almacen),
              fuentes_historico.PCComTracker(cfg, almacen), fuentes_historico.Reacofertas(cfg, almacen)]
     simulada = os.environ.get("FUENTE_SIMULADA")
     if simulada:

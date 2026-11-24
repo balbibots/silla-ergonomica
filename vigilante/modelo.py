@@ -34,6 +34,12 @@ class Observacion:
     valoracion: float | None = None
     num_valoraciones: int | None = None
     categoria: str | None = None
+    # Referencias que publica la propia tienda (Amazon, ficha): el minimo de
+    # los 30 dias anteriores (Omnibus) y el precio mediano son REALES; el PVPR
+    # ("Precio recomendado") es un descuento comercial.
+    min30_cent: int | None = None
+    mediano_cent: int | None = None
+    pvpr_cent: int | None = None
 
     @property
     def precio_con_cupon_cent(self) -> int | None:
