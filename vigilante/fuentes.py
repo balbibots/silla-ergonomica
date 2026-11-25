@@ -178,6 +178,8 @@ class Chollo:
     ref_bot_cent: int | None = None        # mediana de lo visto por el bot (real)
     titulo_ref: str | None = None          # titulo del producto emparejado (juez)
     veredicto: object = None               # niveles.Veredicto, si lo hay
+    ean: str | None = None
+    envio_cent: int | None = None          # gastos de envio si la fuente los da
 
 
 def _precio_texto(t: str) -> int | None:

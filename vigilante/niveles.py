@@ -44,7 +44,7 @@ POR_DEFECTO = {
     "max_referencia_eur": 5000,
     "max_descuento_pct": 95,
     "provisional": {"activo": True, "niveles": ["error", "chollazo"],
-                    "fuentes": ["amazon_ofertas", "chollomazon", "pccomtracker", "reacofertas"]},
+                    "fuentes": ["amazon_ofertas", "chollomazon", "pccomtracker", "reacofertas", "mediamarkt"]},
     "realerta_bajada_pct": 5,
 }
 

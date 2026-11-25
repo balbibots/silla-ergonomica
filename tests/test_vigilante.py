@@ -444,7 +444,7 @@ class Configuracion(unittest.TestCase):
                 config.validar({**cfg, **cambio})
         des = json.loads(json.dumps(cfg["descubrimiento"]))
         des["fuentes"]["chollomazon"]["activo"] = False
-        for f in ("chollometro", "pccomtracker", "reacofertas", "amazon_ofertas"):
+        for f in ("chollometro", "pccomtracker", "reacofertas", "amazon_ofertas", "mediamarkt"):
             des["fuentes"][f]["activo"] = False
         with self.assertRaises(config.ErrorConfig):
             config.validar({**cfg, "descubrimiento": des})
@@ -673,6 +673,7 @@ class Descubrimiento(unittest.TestCase):
         self.assertEqual(self.canal.enviadas, [])
 
     def test_interes_activo_en_cholloMazon(self):
+        con_aspiradoras(self.cfg["descubrimiento"])
         self.lote(T0, B0AAAAAAA3={"titulo": "Cecotec Conga aspiradora escoba sin cable", "categoria": "Moda",
                                   "precio_cent": 12999, "precio_referencia_cent": 13999})
         self.ejecutar(T0)
@@ -1030,6 +1031,12 @@ class Terceros(unittest.TestCase):
                          (None, None), "sin historia suficiente no se dice nada")
 
 
+def con_aspiradoras(des: dict) -> dict:
+    for i in des["intereses"]:
+        i["activo"] = True
+    return des
+
+
 def chollo(titulo, precio, antes=None, texto="", categoria="Electrónica", real=None):
     return fuentes.Chollo(id="1", titulo=titulo, tienda="Amazon", precio_cent=precio, url="https://x/1",
                           publicada=T0, texto=titulo + " " + texto, precio_antes_cent=antes, categoria=categoria,
@@ -1041,8 +1048,9 @@ class ChollosComunidad(unittest.TestCase):
 
     def ev(self, c, exigir=False):
         """Mecanica de los niveles. Por defecto sin exigir historia real, que se
-        prueba aparte (test_chollometro_sin_historia_real_no_avisa)."""
-        des = config.ejemplo()["descubrimiento"]
+        prueba aparte (test_chollometro_sin_historia_real_no_avisa), y con el
+        interes de aspiradoras activo para medir su mecanica."""
+        des = con_aspiradoras(config.ejemplo()["descubrimiento"])
         des["comunidad"]["exigir_historico"] = exigir
         return descubrimiento.evaluar_chollo(c, des, T0, timedelta(hours=6))
 
@@ -1080,6 +1088,12 @@ class ChollosComunidad(unittest.TestCase):
     def test_reacondicionado_nunca(self):
         self.assertIsNone(self.ev(chollo("iPhone 15 reacondicionado ERROR DE PRECIO", 9900, antes=79900)))
         self.assertIsNone(self.ev(chollo("Portátil Lenovo (Renewed)", 19900, antes=89900)))
+
+    def test_aspiradoras_desactivadas_por_defecto(self):
+        des = config.ejemplo()["descubrimiento"]
+        c = chollo("Dreame H12 Aspiradora sin cable", 13000, categoria="Hogar, vivienda y oficina")
+        self.assertIsNone(descubrimiento.evaluar_chollo(c, des, T0, timedelta(hours=6)),
+                          "ya no quieres aspiradoras de catalogo; tus productos vigilados siguen")
 
     def test_intereses_activos(self):
         self.assertEqual(self.ev(chollo("Dreame H12 Aspiradora sin cable", 13000, categoria="Hogar, vivienda y oficina")),
@@ -1197,8 +1211,8 @@ class FuentesConHistorico(unittest.TestCase):
         self.assertTrue(c.url.startswith("https://www.pccomponentes.com/"), "el boton va a la tienda, sin afiliado")
         n = len(pedidas)
         f.candidatos()
-        self.assertEqual(len(pedidas) - n, 1 + len(cfg["descubrimiento"]["intereses"][0]["pccomtracker_categorias"]),
-                         "las fichas se recuerdan 6 h: solo se piden las listas")
+        self.assertEqual(len(pedidas) - n, 1, "las fichas se recuerdan 6 h: solo se pide la portada (el interes "
+                                              "de aspiradoras, y con el su categoria, viene desactivado)")
 
     def test_reacofertas_sin_afiliados_y_con_mediana(self):
         f, _, _ = self._fuente(fuentes_historico.Reacofertas, {
@@ -1209,7 +1223,7 @@ class FuentesConHistorico(unittest.TestCase):
         self.assertEqual((c.minimo_cent, c.minimo_fecha.day), (16999, 7))
 
     def test_catalogo_sin_referencia_real_no_es_interes(self):
-        des = config.ejemplo()["descubrimiento"]
+        des = con_aspiradoras(config.ejemplo()["descubrimiento"])
         c = fuentes.Chollo(id="9", titulo="Aspiradora escoba Adler AD 7036", tienda="PcComponentes", precio_cent=6020,
                            url="https://x", publicada=self.AHORA, texto="", fuente="reacofertas", es_oferta=False,
                            precio_antes_cent=7105, minimo_cent=5208)
@@ -1520,3 +1534,64 @@ class AmazonDirecto(unittest.TestCase):
         t = self.canal.enviadas[0]
         self.assertEqual(t.tipo, "chollo")
         self.assertTrue(t.notas[0].startswith("⏳ PROVISIONAL"), t.notas)
+
+
+class MediaMarktDirecto(unittest.TestCase):
+    """Paginas de campana de MediaMarkt. Caso real (26/11/2026): Apple Watch SE
+    (2024) 44 mm a 89 EUR con tachado de 249 EUR (tipo XOP, precio de
+    referencia), retirado horas despues (HTTP 410)."""
+
+    AHORA = datetime(2026, 11, 26, 16, 0, tzinfo=timezone.utc)
+
+    def fuente(self, reaco=None):
+        cfg = config.ejemplo()
+        cfg["descubrimiento"]["fuentes"]["mediamarkt"]["campanas"] = ["ofertas-flash"]
+        a = Almacen(":memory:")
+
+        def descargar(url):
+            if "reacofertas" in url:
+                if reaco is None:
+                    raise terceros.ErrorTercero("sin ficha")
+                return reaco(url)
+            return dato("mediamarkt_campana.html")
+        return fuentes_tiendas.MediaMarktCampanas(cfg, a, descargar, ahora=self.AHORA), cfg, a
+
+    def test_lee_la_campana(self):
+        ps = fuentes_tiendas.productos_mediamarkt(dato("mediamarkt_campana.html"))
+        reloj = next(p for p in ps if p["id"] == "Media:es:1582399")
+        self.assertEqual((reloj["precio"], reloj["tachado"], reloj["tachado_tipo"], reloj["ean"], reloj["envio"]),
+                         (8900, 24900, "XOP", "0195949704475", 0))
+        self.assertTrue(reloj["url"].endswith("-1582399.html"))
+        plancha = next(p for p in ps if "Steampod" in p["titulo"])
+        self.assertFalse(plancha["disponible"], "agotada online: no entra")
+
+    def procesar(self, f, cfg, a):
+        canal = notificadores.Consola(salida=lambda *_: None)
+        cfg["descubrimiento"]["horario"] = None
+        descubrimiento._procesar_comunidad([(f, c, timedelta(hours=2)) for c in f.candidatos()], cfg, a, canal,
+                                           self.AHORA, self.AHORA, {})
+        return canal.enviadas
+
+    def test_apple_watch_sin_historia_avisa_provisional(self):
+        f, cfg, a = self.fuente()
+        enviadas = self.procesar(f, cfg, a)
+        self.assertEqual([(t.tipo, t.precio_cent) for t in enviadas], [("chollo", 8900)],
+                         "solo el reloj: el TV (51 %) y el Watch SE 3 (16 %) no llegan sin historia")
+        t = enviadas[0]
+        self.assertTrue(t.notas[0].startswith("⏳ PROVISIONAL: −64 % frente al precio de referencia de MediaMarkt"))
+        self.assertEqual((t.boton, t.tienda), ("🛒 Ver en MediaMarkt", "MediaMarkt"))
+        self.assertIn("envío gratis", t.condiciones)
+
+    def test_apple_watch_con_historia_real(self):
+        def reaco(url):
+            if "1582399" in url:   # 229 EUR durante los ultimos 60 dias
+                return ('<title>Histórico de precios: Apple Watch SE | REACOFERTAS</title>'
+                        'const rawPoints = [{"fecha":"2026-09-20","precio":229}];')
+            return ('<title>Histórico de precios: TV | REACOFERTAS</title>'
+                    'const rawPoints = [{"fecha":"2026-09-20","precio":649}];')
+        f, cfg, a = self.fuente(reaco)
+        enviadas = self.procesar(f, cfg, a)
+        self.assertEqual([(t.tipo, t.precio_cent, t.referencia_cent) for t in enviadas], [("chollo", 8900, 22900)],
+                         "el reloj es −61 % real; el TV, −9 % frente a su precio real (PVPR inflado)")
+        self.assertIn("✅ Descuento real: −61 %", enviadas[0].notas[0])
+        self.assertEqual(enviadas[0].enlaces[0][0], "📈 Historial")

@@ -22,7 +22,7 @@ logs y a la base de datos.
 | Nivel | Qué vigila | Cuándo avisa | Fuentes |
 |---|---|---|---|
 | **1 · Tus productos** | Los productos de `productos`, en cada una de sus tiendas | **Cada transición**: cualquier cambio de precio (desde 0,01 €) o de stock en cada tienda, aunque no sea la más barata y aunque ese precio ya se viera antes; 📉/📈 cambio del mejor precio, 🎯 objetivo, 📊/🏆 mínimos y 📦 reposición. Todo lo de un ciclo va en **una sola tarjeta** por producto. Sin filtros de valoraciones | Fichas de las tiendas (y pccomtracker para PcComponentes). 👀 también si alguien los publica en Chollometro |
-| **2 · 🛍️ Intereses activos** | Lo que buscas ahora (`descubrimiento.intereses`, de inicio: aspiradoras) por palabras del título, con exclusiones (robots, recambios, bolsas…) | Descuento de al menos un 15 % y 10 €, **o** precio por debajo de tu objetivo (140 €), entre 50 y 250 €. Lo que sale de un catálogo (una categoría o una búsqueda) necesita siempre descuento frente a una referencia real | CholloMazon, Chollometro y, para tus intereses, las categorías de pccomtracker y las búsquedas de reacofertas |
+| **2 · 🛍️ Intereses activos** | Lo que buscas ahora (`descubrimiento.intereses`, de inicio: aspiradoras) por palabras del título, con exclusiones (robots, recambios, bolsas…) | Descuento de al menos un 15 % y 10 €, **o** precio por debajo de tu objetivo (140 €), entre 50 y 250 €. Lo que sale de un catálogo (una categoría o una búsqueda) necesita siempre descuento frente a una referencia real | CholloMazon, Chollometro y, para tus intereses, las categorías de pccomtracker y las búsquedas de reacofertas | **Desde v12 no hay ningún interés activo** (las aspiradoras de catálogo se desactivaron; los productos vigilados siguen). Para activar uno, `"activo": true` en `descubrimiento.intereses`.
 | **3 · 💥 Chollazos excepcionales** | **Cualquier categoría** | Descuento **real** de al menos un **60 % y 30 €**. Real = frente al mínimo de 30 días, el precio mediano, el habitual o lo que el bot ha visto (ver «Detector»). **Un tachado o un PVPR nunca deciden**. A cualquier hora | Amazon (ofertas + ficha), pccomtracker, reacofertas, CholloMazon y Chollometro con juez |
 | **3b · 💎 Ofertas extraordinarias** | **Cualquier categoría** | Descuento real de **40 % y 50 €**, o de **30 % y 150 €** | Las mismas |
 | **4 · 🚨 Errores de precio** | **Cualquier categoría** | Descuento real del **80 %** o más (sobre algo de 50 € o más, ahorrando 30 €, y no más del 95 %, que suele ser un dato roto), o la comunidad lo llama «error de precio» en el título (con historia real). A cualquier hora y sin gastar el cupo diario. **«Comprobado»** si el bot ha leído ese precio y stock en la ficha de la tienda (hoy, Amazon); si no, **«sin comprobar»** | Las mismas |
@@ -80,7 +80,7 @@ o reacofertas; nunca con el «antes» de Chollometro.
 | PcComponentes | pccomtracker (portada y categorías) y reacofertas | ✅ Integradas (terceros, actualizan a diario) |
 | PcComponentes | Chollometro como detector + juez (índice semanal de 119.909 fichas de pccomtracker y buscador de reacofertas) | ✅ Integrado: rápido (minutos) cuando alguien la publica |
 | PcComponentes, El Corte Inglés, Fnac, Worten, Carrefour… | Feed de productos de Awin (programa de afiliados) | ⏳ **Pendiente de registro** (gratis): precio, stock, EAN y MPN con permiso de la tienda. Frecuencia de actualización sin confirmar |
-| MediaMarkt | Fichas: JSON-LD y «Precio más bajo (30 días)» | ✅ Para tus productos. Sus listados y campañas cargan los productos por su API interna (GraphQL): no se usa |
+| MediaMarkt | Páginas de campaña (Ofertas Flash, Ofertas del día, Black Friday, Campañas): el HTML trae los primeros productos de cada bloque con EAN, precio, envío, stock y el tachado con su tipo: `LOP` = mínimo de 30 días (real), `XOP` = precio de referencia (tipo PVPR, comercial). Para los `XOP` se busca la serie real en reacofertas por la URL exacta | ✅ **Integrada** (v12), cada 15 min (10 en ventana rápida). Limitación: solo los productos que vienen en el HTML; el resto de cada bloque lo carga su API interna (GraphQL), que no se usa. Sin historia real, solo provisionales de chollazo o error |
 | El Corte Inglés, Fnac | — | ❌ 403 incluso en robots.txt |
 | Carrefour, Worten | — | ❌ 403 |
 | Miravia | Portada (recomendaciones con «precio original» de vendedores) | ⏳ Pendiente: solo descuentos anunciados |
@@ -535,7 +535,7 @@ En `data/`, en la propia Pi:
 python -m unittest discover -s tests -v
 ```
 
-Son 123 pruebas sin red. Cubren:
+Son 127 pruebas sin red. Cubren:
 
 - **Lectura de la ficha:** producto y variante correctos, precio de oferta
   frente al tachado y las cuotas, decimales con coma, página sin precio,

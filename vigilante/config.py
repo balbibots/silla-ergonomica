@@ -20,7 +20,7 @@ from .modelo import Producto, Tienda, a_centimos, asin_desde, url_amazon
 
 RAIZ = Path(__file__).resolve().parent.parent
 EJEMPLO = RAIZ / "config.example.json"
-VERSION = 11
+VERSION = 12
 CANALES = ("telegram", "discord", "consola")
 FUENTES = ("amazon_ficha", "jsonld", "shopify", "pccomtracker")
 # Tiendas que no dejan leer sus fichas de forma automatica (comprobado el
@@ -90,9 +90,10 @@ INTERESES_V8 = [{
     "descuento_min_pct": 15, "ahorro_min_eur": 10,
 }]
 ERRORES_V8 = {"descuento_min_pct": 80, "ahorro_min_eur": 30, "valor_min_eur": 50, "todas_las_categorias": True}
-FUENTES_DESCUBRIMIENTO = ("amazon_ofertas", "chollomazon", "chollometro", "pccomtracker", "reacofertas", "simulado")
-MIN_INTERVALO_FUENTE = {"amazon_ofertas": 10, "chollomazon": 60, "chollometro": 3, "pccomtracker": 30,
-                        "reacofertas": 60}
+FUENTES_DESCUBRIMIENTO = ("amazon_ofertas", "mediamarkt", "chollomazon", "chollometro", "pccomtracker",
+                          "reacofertas", "simulado")
+MIN_INTERVALO_FUENTE = {"amazon_ofertas": 10, "mediamarkt": 10, "chollomazon": 60, "chollometro": 3,
+                        "pccomtracker": 30, "reacofertas": 60}
 VENTANAS_V11 = [{"desde": "06:55", "hasta": "10:30", "factor": 0.5}]
 # v9: descubrimiento con referencias de precios reales.
 FUENTES_V9 = {
@@ -294,6 +295,20 @@ def actualizar_esquema(cfg: dict) -> tuple[dict, list[str]]:
         cambios.append("nueva fuente directa: la pagina de ofertas de Amazon, comprobando cada ficha")
         cambios.append("de 06:55 a 10:30 las fuentes se miran el doble de a menudo (ofertas flash)")
         cfg["version"] = 11
+    if cfg.get("version", 1) < 12:
+        des = cfg.setdefault("descubrimiento", {})
+        des["fuentes"].setdefault("mediamarkt", {
+            "activo": True, "intervalo_min": 15, "max_antiguedad_horas": 2, "max_consultas": 8,
+            "campanas": ["ofertas-flash", "ofertas-destacadas", "black-friday", "campanas-y-ofertas"]})
+        cambios.append("nueva fuente directa: las paginas de ofertas de MediaMarkt (Ofertas Flash, del dia...)")
+        prov = des.get("niveles", {}).get("provisional", {})
+        if "mediamarkt" not in prov.get("fuentes", ["mediamarkt"]):
+            prov["fuentes"].append("mediamarkt")
+        for it in des.get("intereses", []):
+            if it.get("nombre") == "Aspiradoras" and it.get("activo", True):
+                it["activo"] = False
+                cambios.append("desactivado el interes 'Aspiradoras' (tus productos vigilados siguen igual)")
+        cfg["version"] = 12
     antes = json.dumps(cfg, sort_keys=True)
     _completar(cfg, ejemplo())
     if json.dumps(cfg, sort_keys=True) != antes:

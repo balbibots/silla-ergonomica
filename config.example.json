@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 12,
   "canal": "telegram",
   "seguimiento": {
     "activo": true,
@@ -153,6 +153,18 @@
         "activo": true,
         "intervalo_min": 15,
         "max_antiguedad_horas": 6
+      },
+      "mediamarkt": {
+        "activo": true,
+        "intervalo_min": 15,
+        "max_antiguedad_horas": 2,
+        "max_consultas": 8,
+        "campanas": [
+          "ofertas-flash",
+          "ofertas-destacadas",
+          "black-friday",
+          "campanas-y-ofertas"
+        ]
       }
     },
     "horario": {
@@ -218,7 +230,7 @@
     "intereses": [
       {
         "nombre": "Aspiradoras",
-        "activo": true,
+        "activo": false,
         "incluir": [
           "aspiradora",
           "aspirador",
@@ -300,7 +312,8 @@
           "amazon_ofertas",
           "chollomazon",
           "pccomtracker",
-          "reacofertas"
+          "reacofertas",
+          "mediamarkt"
         ]
       },
       "realerta_bajada_pct": 5

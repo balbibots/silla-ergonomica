@@ -587,7 +587,8 @@ def evaluar_chollo(c, des: dict, ahora: datetime, max_ant: timedelta) -> str | N
         c.min30_cent = c.minimo_cent  # su minimo reciente: frente a el no hay descuento
     ev = niveles.Evidencia(precio=c.precio_cent, min30=c.min30_cent, habitual=c.ref_hist_cent, bot=c.ref_bot_cent,
                            anunciado=c.precio_antes_cent,
-                           anunciado_tipo="antes" if c.fuente == "chollometro" else "precio anterior",
+                           anunciado_tipo={"chollometro": "antes", "mediamarkt": "precio de referencia de MediaMarkt"}.get(
+                               c.fuente, "precio anterior"),
                            textos={"min30": "su mínimo de 30 días", "habitual": c.ref_texto or "precio habitual",
                                    "bot": "lo que he visto en 30 días"})
     v = niveles.evaluar(ev, des["niveles"], c.fuente)
@@ -659,11 +660,12 @@ def _procesar_comunidad(lote, cfg, almacen: Almacen, notificador, ahora, hoy, at
             continue
         if c.fuente == "chollometro" and des["comunidad"].get("exigir_historico", True) and juez                 and c.precio_cent is not None and (not c.publicada or ahora - c.publicada <= max_ant)                 and not no_es_nuevo(c.titulo):
             juez.juzgar(c, ahora)
-        k = historia.clave(c.tienda or fuente.nombre, titulo=c.titulo_ref or c.titulo)
+        k = historia.clave(c.tienda or fuente.nombre, ean=c.ean, titulo=c.titulo_ref or c.titulo)
         if c.precio_cent is not None:
             c.ref_bot_cent = historia.referencia_bot(almacen, k, ahora)
             historia.registrar(almacen, k, c.fuente, c.tienda, c.precio_cent, ahora, min30=c.min30_cent,
-                               habitual=c.ref_hist_cent, anunciado=c.precio_antes_cent, titulo=c.titulo, disponible=1)
+                               habitual=c.ref_hist_cent, anunciado=c.precio_antes_cent, titulo=c.titulo, disponible=1,
+                               ean=c.ean, envio=c.envio_cent, sku=c.id if c.fuente == "mediamarkt" else None)
         tipo = evaluar_chollo(c, des, ahora, max_ant)
         clave = "%s:%s" % (fuente.nombre, c.id)
         if not tipo or _ya_avisado(almacen, clave, ["comunidad_error_precio", "comunidad_chollo",
@@ -702,7 +704,7 @@ def tarjeta_chollo(c, tipo: str, ahora: datetime, atribucion: str) -> Tarjeta:
                 referencia_etiqueta="habitual" if real else "antes",
                 categoria=c.categoria, imagen=c.imagen, tienda=c.tienda or None,
                 boton="🔥 Ver el chollo" if c.fuente == "chollometro" else
-                ("🛒 Ver en %s" % c.tienda if c.fuente == "pccomtracker" else "📈 Ver en reacofertas"))
+                ("🛒 Ver en %s" % c.tienda if c.fuente in ("pccomtracker", "mediamarkt") else "📈 Ver en reacofertas"))
     minutos = int((ahora - c.publicada).total_seconds() // 60) if c.publicada else None
     if c.minimo_cent and c.precio_cent is not None:
         f = " el %s" % c.minimo_fecha.strftime("%d/%m") if c.minimo_fecha else ""
@@ -728,6 +730,12 @@ def tarjeta_chollo(c, tipo: str, ahora: datetime, atribucion: str) -> Tarjeta:
             t.enlaces = [("📈 Historial", c.pagina)]
     elif c.fuente == "pccomtracker":
         t.fuente = "precio comprobado por pccomtracker" + (_hace(minutos) if minutos is not None else "")
+    elif c.fuente == "mediamarkt":
+        t.fuente = "MediaMarkt, página de ofertas leída por el bot"
+        if c.envio_cent is not None:
+            t.condiciones.append("envío gratis" if c.envio_cent == 0 else "envío %s" % eur(c.envio_cent))
+        if c.ref_hist_cent or c.min30_cent:
+            t.enlaces = [("📈 Historial", c.pagina)] if c.pagina else []
     else:
         t.fuente = "reacofertas (actualiza a diario)"
     return t
